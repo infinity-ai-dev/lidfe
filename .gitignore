@@ -1,0 +1,110 @@
+# Miscellaneous
+*.class
+*.log
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.buildlog/
+.history
+.svn/
+
+# IntelliJ related
+*.iml
+*.ipr
+*.iws
+.idea/
+
+# The .vscode folder contains launch configuration and tasks you configure in
+# VS Code which you may wish to be included in version control, so this line
+# is commented out by default.
+#.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+.pub/
+/build/
+
+# Firebase – this is necessary if you use Firebase since it could otherwise 
+# lead to leaking of private certificates to your repository, which is no bueno.
+.firebase/
+
+# Web related
+
+# Symbolication related
+app.*.symbols
+
+# Obfuscation related
+app.*.map.json
+
+# Android Studio will place build artifacts here
+/android/app/debug
+/android/app/profile
+/android/app/release
+
+# Certificados digitais (contém chaves privadas - NUNCA commitar!)
+*.pfx
+*.p12
+*.pem
+*.key
+assets/certificados/*.pfx
+assets/certificados/*.p12
+
+# Keystore para assinatura de APK (NUNCA commitar!)
+*.jks
+*.keystore
+android/key.properties
+android/upload-keystore.jks
+
+# Arquivos APK gerados (muito grandes para o Git)
+*.apk
+*.aab
+
+# Backup Flutter (pode ser removido após validação)
+backup_flutter_*/
+
+# Node / Expo / TypeScript
+**/node_modules/
+**/.expo/
+**/dist/
+**/build/
+**/.next/
+**/coverage/
+
+# Ferramentas e metadados locais
+.metadata
+.playwright-mcp/
+.serena/
+.claude/
+.mcp.json
+.git.*-backup*/
+
+# Artefatos locais de teste/validação
+/backend.zip
+/consulta-documento.pdf (1).pdf
+/guia-geral-lidfe.png
+/guia-geral-verificacao*.png
+/guia-individual-verificacao.png
+/results-top-progress*.png
+/test-*.png
+/desktop-*.png
+/tablet-*.png
+/tela-branca.png
+/61 Sem*.png
+/*.mov
+/*.mp4
+/*.opus
+
+# Cópias/legados fora do escopo do projeto atual
+/agent-ia-backup-ts/
+/agent-ia-python/
+/agentes-ia/
+/Modular Agent/
+/human-body-3d-api/
+/bin/

@@ -1,0 +1,53 @@
+{
+  "expo": {
+    "name": "LIDFE",
+    "slug": "lidfe-mobile",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/images/icon.png",
+    "userInterfaceStyle": "automatic",
+    "splash": {
+      "image": "./assets/images/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#ffffff"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "lidfe.mayacrm.shop",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Este app precisa acessar o microfone para gravar áudios durante a anamnese."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/images/adaptive-icon.png",
+        "backgroundColor": "#ffffff"
+      },
+      "package": "lidfe.mayacrm.shop",
+      "permissions": [
+        "android.permission.RECORD_AUDIO"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/images/lidfe-favicon.png"
+    },
+    "plugins": [
+      "expo-router",
+      [
+        "expo-av",
+        {
+          "microphonePermission": "Este app precisa acessar o microfone para gravar áudios durante a anamnese."
+        }
+      ]
+    ],
+    "scheme": "lidfe",
+    "extra": {
+      "eas": {
+        "projectId": "your-project-id"
+      }
+    }
+  }
+}

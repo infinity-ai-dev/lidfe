@@ -1,0 +1,196 @@
+version: "3.8"
+
+services:
+  # Lidfe - Backend API + Frontend Web (Expo) no mesmo serviço
+  # Backend: Express + TypeScript gerencia auth, DB e edge functions
+  # Frontend: Expo web servido como arquivos estáticos pelo backend
+  lidfe:
+    image: paxley/lidfe:latest
+    networks:
+      - network_public
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - SUPABASE_URL=${SUPABASE_URL:-https://xradpyucukbqaulzhdab.supabase.co}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY_FILE=/run/secrets/supabase_service_role_key
+      - LIDFE_AUTH_TOKEN=${LIDFE_AUTH_TOKEN}
+      - LIDFE_HMAC_ENFORCE=true
+      - LIDFE_HMAC_TTL_SECONDS=60
+      - LIDFE_HMAC_CLOCK_SKEW_SECONDS=5
+    secrets:
+      - supabase_service_role_key
+    restart: unless-stopped
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        - "traefik.enable=true"
+        # Recebe tudo EXCETO os paths do SSE e agent-ia
+        - "traefik.http.routers.lidfe.rule=Host(`lidfe.mayacrm.shop`) && !PathPrefix(`/sse`) && !PathPrefix(`/debug`) && !PathPrefix(`/status`) && !PathPrefix(`/publish`) && !PathPrefix(`/test`) && !PathPrefix(`/agent`)"
+        - "traefik.http.routers.lidfe.entrypoints=websecure"
+        - "traefik.http.routers.lidfe.tls.certresolver=letsencryptresolver"
+        - "traefik.http.services.lidfe.loadbalancer.server.port=3000"
+        - "traefik.http.routers.lidfe.priority=1"
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  # Agente IA - Serviço separado para processamento de anamnese
+  agent-ia:
+    image: paxley/lidfe-agent-ia:latest
+    networks:
+      - network_public
+    environment:
+      - PORT=3002
+      # Gemini API Key via Docker Secret
+      - GEMINI_API_KEY_FILE=/run/secrets/gemini_api_key
+      - SUPABASE_URL=${SUPABASE_URL:-https://xradpyucukbqaulzhdab.supabase.co}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      # Service Role Key via Docker Secret (bypassa RLS)
+      # Nota: usamos somente Service Role Key neste deploy
+      - SUPABASE_SERVICE_ROLE_KEY_FILE=/run/secrets/supabase_service_role_key
+      # Redis para coordenação
+      - REDIS_URL=redis://redis:6379
+      - REDIS_DB=0
+      - NODE_ENV=production
+      # URL do backend centralizado (lidfe-backend + frontend)
+      - BACKEND_URL=http://lidfe:3000
+      # Token de autenticação para chamadas do Agent-IA
+      - LIDFE_AUTH_TOKEN=${LIDFE_AUTH_TOKEN}
+      # HMAC assinatura para chamadas internas
+      - LIDFE_HMAC_ENFORCE=true
+      - LIDFE_HMAC_TTL_SECONDS=60
+      - LIDFE_HMAC_CLOCK_SKEW_SECONDS=5
+      # Token curto para SSE (segundos)
+      - LIDFE_SSE_TOKEN_TTL_SECONDS=300
+      # Grok (xAI) — fallback LLM quando Gemini retorna 429
+      - GROK_API_KEY_FILE=/run/secrets/grok_api_key
+    secrets:
+      - gemini_api_key
+      - supabase_service_role_key
+      - grok_api_key
+    deploy:
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        - "traefik.enable=true"
+        # Rota para /agent (API do agente IA) - Prioridade alta
+        - "traefik.http.routers.lidfe-agent.rule=Host(`lidfe.mayacrm.shop`) && PathPrefix(`/agent`)"
+        - "traefik.http.routers.lidfe-agent.entrypoints=websecure"
+        - "traefik.http.routers.lidfe-agent.tls.certresolver=letsencryptresolver"
+        - "traefik.http.routers.lidfe-agent.service=lidfe-agent"
+        - "traefik.http.routers.lidfe-agent.priority=10"
+        # Middleware para remover prefixo /agent de TODOS os paths
+        - "traefik.http.middlewares.lidfe-agent-stripprefix.stripprefix.prefixes=/agent"
+        - "traefik.http.routers.lidfe-agent.middlewares=lidfe-agent-stripprefix"
+        # Serviço do Agente IA
+        - "traefik.http.services.lidfe-agent.loadbalancer.server.port=3002"
+        # Config check endpoint (para verificar configuração)
+        - "traefik.http.routers.lidfe-agent-config.rule=Host(`lidfe.mayacrm.shop`) && PathPrefix(`/agent/config/check`)"
+        - "traefik.http.routers.lidfe-agent-config.entrypoints=websecure"
+        - "traefik.http.routers.lidfe-agent-config.tls.certresolver=letsencryptresolver"
+        - "traefik.http.routers.lidfe-agent-config.service=lidfe-agent"
+        - "traefik.http.routers.lidfe-agent-config.priority=10"
+        - "traefik.http.routers.lidfe-agent-config.middlewares=lidfe-agent-stripprefix"
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  # Servidor SSE - Comunicação em tempo real (Serviço Separado)
+  # OPCIONAL: Mantido para compatibilidade, mas não é mais necessário
+  # já que o agente IA processa mensagens de forma síncrona
+  # Pode ser removido se não houver necessidade de comunicação assíncrona
+  sse-server:
+    image: paxley/lidfe-sse-server:latest
+    networks:
+      - network_public
+    environment:
+      - PORT=3001
+      # Redis compartilhado da infraestrutura
+      # SSE Server pode usar DB=0 (padrão) ou outro
+      - REDIS_URL=redis://redis:6379
+      # Opcional: especificar database diferente (0 = padrão)
+      - REDIS_DB=0
+      - NODE_ENV=production
+      # Token de autenticação para SSE (mesmo do Agent-IA)
+      - LIDFE_AUTH_TOKEN=${LIDFE_AUTH_TOKEN}
+      # HMAC assinatura para chamadas internas
+      - LIDFE_HMAC_ENFORCE=true
+      - LIDFE_HMAC_TTL_SECONDS=60
+      - LIDFE_HMAC_CLOCK_SKEW_SECONDS=5
+      # Supabase para validação de JWT
+      - SUPABASE_URL=${SUPABASE_URL:-https://xradpyucukbqaulzhdab.supabase.co}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+    deploy:
+      # Ativar SSE para suportar /agent/sse do frontend
+      replicas: 1
+      placement:
+        constraints:
+          - node.role == manager
+      labels:
+        - "traefik.enable=true"
+        # Rota para /sse e /agent/sse (SSE endpoint) - Prioridade alta para ser processada primeiro
+        # O middleware remove /agent quando necessário; /sse permanece intacto
+        - "traefik.http.routers.lidfe-sse-sse.rule=Host(`lidfe.mayacrm.shop`) && (PathPrefix(`/sse`) || PathPrefix(`/agent/sse`))"
+        - "traefik.http.routers.lidfe-sse-sse.entrypoints=websecure"
+        - "traefik.http.routers.lidfe-sse-sse.tls.certresolver=letsencryptresolver"
+        - "traefik.http.routers.lidfe-sse-sse.service=lidfe-sse"
+        - "traefik.http.routers.lidfe-sse-sse.priority=10"
+        - "traefik.http.routers.lidfe-sse-sse.middlewares=lidfe-sse-agent-stripprefix"
+        # Rota para /debug (página de debug)
+        # NÃO remove o prefixo /debug - servidor espera receber /debug
+        - "traefik.http.routers.lidfe-sse-debug.rule=Host(`lidfe.mayacrm.shop`) && PathPrefix(`/debug`)"
+        - "traefik.http.routers.lidfe-sse-debug.entrypoints=websecure"
+        - "traefik.http.routers.lidfe-sse-debug.tls.certresolver=letsencryptresolver"
+        - "traefik.http.routers.lidfe-sse-debug.service=lidfe-sse"
+        - "traefik.http.routers.lidfe-sse-debug.priority=10"
+        # Rota para /status, /publish, /test (API endpoints)
+        # NÃO remove os prefixos - servidor espera receber /status, /publish, /test
+        - "traefik.http.routers.lidfe-sse-api.rule=Host(`lidfe.mayacrm.shop`) && (PathPrefix(`/status`) || PathPrefix(`/publish`) || PathPrefix(`/test`))"
+        - "traefik.http.routers.lidfe-sse-api.entrypoints=websecure"
+        - "traefik.http.routers.lidfe-sse-api.tls.certresolver=letsencryptresolver"
+        - "traefik.http.routers.lidfe-sse-api.service=lidfe-sse"
+        - "traefik.http.routers.lidfe-sse-api.priority=10"
+        # Remover prefixo /agent quando usado (/agent/sse)
+        - "traefik.http.middlewares.lidfe-sse-agent-stripprefix.stripprefix.prefixes=/agent"
+        # Serviço SSE
+        - "traefik.http.services.lidfe-sse.loadbalancer.server.port=3001"
+      update_config:
+        parallelism: 1
+        delay: 10s
+        failure_action: rollback
+      restart_policy:
+        condition: on-failure
+        delay: 5s
+        max_attempts: 3
+
+  # Redis não está definido aqui - usa o Redis compartilhado da infraestrutura
+  # O Redis está acessível via nome 'redis' na network_public
+  # SSE Server usa: REDIS_URL=redis://redis:6379 (DB=0 padrão ou configurado via REDIS_DB)
+
+networks:
+  network_public:
+    external: true
+
+secrets:
+  gemini_api_key:
+    external: true
+  supabase_service_role_key:
+    external: true
+  grok_api_key:
+    external: true

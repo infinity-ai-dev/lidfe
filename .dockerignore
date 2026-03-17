@@ -1,0 +1,38 @@
+# Ignorar apenas arquivos desnecessários
+node_modules
+npm-debug.log
+
+# Flutter temporários
+.dart_tool
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache
+.pub/
+
+# IDEs
+.idea
+.vscode
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Git
+.git
+.gitignore
+.gitattributes
+
+# Build antigo (será reconstruído)
+# build/
+
+# Docs e scripts
+*.md
+!README.md
+*.sh
+!docker-entrypoint.sh
+*.ps1
+*.txt
