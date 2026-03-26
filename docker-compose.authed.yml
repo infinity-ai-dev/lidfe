@@ -1,11 +1,11 @@
 version: "3.8"
 
 services:
-  # Frontend - LIDFE Web App (React Native/Expo)
-  # Versão WEB para navegadores (iOS/Android são builds separados via EAS)
+  # Frontend - LIDFE Web App servido pelo backend Node/Express
+  # A imagem infinitytools/lidfe já embute o bundle web do Expo
   frontend:
     # Usar imagem do Docker Hub após build e push
-    image: paxley/lidfe-web:latest
+    image: infinitytools/lidfe:latest
     # Se precisar fazer build local, descomente as linhas abaixo e comente a linha acima
     # build:
     #   context: ./mobile
@@ -14,13 +14,26 @@ services:
     #     EXPO_PUBLIC_SUPABASE_URL: ${SUPABASE_URL:-https://xradpyucukbqaulzhdab.supabase.co}
     #     EXPO_PUBLIC_SUPABASE_ANON_KEY: ${SUPABASE_ANON_KEY}
     #     EXPO_PUBLIC_AGENT_IA_URL: https://lidfe.mayacrm.shop/agent
+    #     EXPO_PUBLIC_AGENT_IA_SSE_URL: https://lidfe.mayacrm.shop/sse
     #     EXPO_PUBLIC_AGENT_IA_AUTH_TOKEN: ${LIDFE_AUTH_TOKEN}
     #     EXPO_PUBLIC_SSE_AUTH_TOKEN: ${LIDFE_AUTH_TOKEN}
+    environment:
+      - PORT=3000
+      - NODE_ENV=production
+      - SUPABASE_URL=${SUPABASE_URL:-https://xradpyucukbqaulzhdab.supabase.co}
+      - SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+      - SUPABASE_SERVICE_ROLE_KEY_FILE=/run/secrets/supabase_service_role_key
+      - LIDFE_AUTH_TOKEN=${LIDFE_AUTH_TOKEN}
+      - LIDFE_HMAC_ENFORCE=true
+      - LIDFE_HMAC_TTL_SECONDS=60
+      - LIDFE_HMAC_CLOCK_SKEW_SECONDS=5
+    secrets:
+      - supabase_service_role_key
     networks:
       - network_public
     restart: unless-stopped
-    # Nota: As variáveis EXPO_PUBLIC_* são incluídas no bundle durante o build
-    # Não são necessárias em runtime (já estão no JavaScript compilado)
+    # Nota: As variáveis EXPO_PUBLIC_* são incluídas no bundle durante o build.
+    # Em runtime o container também sobe a API/SPA do backend, por isso precisa das credenciais abaixo.
     deploy:
       replicas: 1
       placement:
@@ -32,7 +45,7 @@ services:
         - "traefik.http.routers.lidfe-frontend.rule=Host(`lidfe.mayacrm.shop`) && !PathPrefix(`/sse`) && !PathPrefix(`/debug`) && !PathPrefix(`/status`) && !PathPrefix(`/publish`) && !PathPrefix(`/test`) && !PathPrefix(`/agent`)"
         - "traefik.http.routers.lidfe-frontend.entrypoints=websecure"
         - "traefik.http.routers.lidfe-frontend.tls.certresolver=letsencryptresolver"
-        - "traefik.http.services.lidfe-frontend.loadbalancer.server.port=80"
+        - "traefik.http.services.lidfe-frontend.loadbalancer.server.port=3000"
         - "traefik.http.routers.lidfe-frontend.priority=1"
       update_config:
         parallelism: 1
@@ -45,7 +58,7 @@ services:
 
   # Agente IA - Serviço separado para processamento de anamnese
   agent-ia:
-    image: paxley/lidfe-agent-ia:latest
+    image: infinitytools/ai-agent:latest
     networks:
       - network_public
     environment:
@@ -113,7 +126,7 @@ services:
   # já que o agente IA processa mensagens de forma síncrona
   # Pode ser removido se não houver necessidade de comunicação assíncrona
   sse-server:
-    image: paxley/lidfe-sse-server:latest
+    image: infinitytools/sse-server:latest
     networks:
       - network_public
     environment:

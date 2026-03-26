@@ -51,18 +51,32 @@ type PageFonts = {
 
 const clamp = (value: number, min: number, max: number) => Math.max(min, Math.min(max, value));
 
+const parseDateInput = (raw?: string): Date | null => {
+  if (!raw) return null;
+
+  const normalized = raw.trim();
+  if (!normalized) return null;
+
+  const ptBrMatch = normalized.match(/^(\d{2})\/(\d{2})\/(\d{4})$/);
+  if (ptBrMatch) {
+    const [, day, month, year] = ptBrMatch;
+    const parsed = new Date(Number(year), Number(month) - 1, Number(day));
+    return Number.isNaN(parsed.getTime()) ? null : parsed;
+  }
+
+  const parsed = new Date(normalized);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
 const formatPtBrDate = (raw?: string): string => {
   if (!raw) return new Date().toLocaleDateString('pt-BR');
-  const parsed = new Date(raw);
-  if (Number.isNaN(parsed.getTime())) return raw;
+  const parsed = parseDateInput(raw);
+  if (!parsed) return raw;
   return parsed.toLocaleDateString('pt-BR');
 };
 
 const addDaysToPtBrDate = (raw: string | undefined, days: number): string => {
-  const date = raw ? new Date(raw) : new Date();
-  if (Number.isNaN(date.getTime())) {
-    return new Date(Date.now() + days * 86400000).toLocaleDateString('pt-BR');
-  }
+  const date = parseDateInput(raw) || new Date();
   date.setDate(date.getDate() + days);
   return date.toLocaleDateString('pt-BR');
 };

@@ -5,7 +5,7 @@ services:
   # Backend: Express + TypeScript gerencia auth, DB e edge functions
   # Frontend: Expo web servido como arquivos estáticos pelo backend
   lidfe:
-    image: paxley/lidfe:latest
+    image: infinitytools/lidfe:latest
     networks:
       - network_public
     environment:
@@ -45,7 +45,7 @@ services:
 
   # Agente IA - Serviço separado para processamento de anamnese
   agent-ia:
-    image: paxley/lidfe-agent-ia:latest
+    image: infinitytools/ai-agent:latest
     networks:
       - network_public
     environment:
@@ -116,7 +116,7 @@ services:
   # já que o agente IA processa mensagens de forma síncrona
   # Pode ser removido se não houver necessidade de comunicação assíncrona
   sse-server:
-    image: paxley/lidfe-sse-server:latest
+    image: infinitytools/sse-server:latest
     networks:
       - network_public
     environment:

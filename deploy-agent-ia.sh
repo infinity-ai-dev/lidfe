@@ -22,7 +22,7 @@ echo ""
 
 sshpass -p "$SSH_PASSWORD" ssh -o StrictHostKeyChecking=no "${SSH_USER}@${VPS_IP}" << EOF
   echo "Atualizando serviço ${SERVICE_NAME}..."
-  docker service update --image paxley/lidfe-agent-ia:latest ${SERVICE_NAME}
+  docker service update --image infinitytools/ai-agent:latest ${SERVICE_NAME}
   
   echo ""
   echo "Aguardando serviço estabilizar (30s)..."

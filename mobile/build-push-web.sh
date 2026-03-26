@@ -1,6 +1,7 @@
 #!/bin/bash
 
-# Script para build e push da versão WEB do app React Native/Expo
+# Script para build e push da imagem web publicada em infinitytools/lidfe
+# A imagem final é gerada pelo backend/Dockerfile e serve o bundle Expo via Node/Express
 
 set -e
 
@@ -11,11 +12,24 @@ YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 NC='\033[0m' # No Color
 
-IMAGE_NAME="${IMAGE_NAME:-paxley/lidfe-web}"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+
+IMAGE_NAME="${IMAGE_NAME:-infinitytools/lidfe}"
 IMAGE_TAG="${IMAGE_TAG:-latest}"
+EXPO_PUBLIC_SUPABASE_URL="${EXPO_PUBLIC_SUPABASE_URL:-${SUPABASE_URL:-https://xradpyucukbqaulzhdab.supabase.co}}"
+EXPO_PUBLIC_SUPABASE_ANON_KEY="${EXPO_PUBLIC_SUPABASE_ANON_KEY:-${SUPABASE_ANON_KEY:-}}"
+EXPO_PUBLIC_AGENT_IA_URL="${EXPO_PUBLIC_AGENT_IA_URL:-https://lidfe.mayacrm.shop/agent}"
+EXPO_PUBLIC_AGENT_IA_SSE_URL="${EXPO_PUBLIC_AGENT_IA_SSE_URL:-https://lidfe.mayacrm.shop/sse}"
+EXPO_PUBLIC_AGENT_IA_AUTH_TOKEN="${EXPO_PUBLIC_AGENT_IA_AUTH_TOKEN:-${LIDFE_AUTH_TOKEN:-}}"
+EXPO_PUBLIC_SSE_AUTH_TOKEN="${EXPO_PUBLIC_SSE_AUTH_TOKEN:-${LIDFE_AUTH_TOKEN:-}}"
+EXPO_PUBLIC_VALIDATION_URL="${EXPO_PUBLIC_VALIDATION_URL:-https://validar.iti.gov.br}"
+EXPO_PUBLIC_LAB_WHATSAPP="${EXPO_PUBLIC_LAB_WHATSAPP:-}"
+EXPO_PUBLIC_APP_ENV="${EXPO_PUBLIC_APP_ENV:-production}"
+EXPO_PUBLIC_AUTH_ENFORCE_EXPIRY="${EXPO_PUBLIC_AUTH_ENFORCE_EXPIRY:-true}"
 
 echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}Build e Push - LIDFE Web (Expo)${NC}"
+echo -e "${BLUE}Build e Push - LIDFE Web${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
@@ -23,6 +37,16 @@ echo ""
 if [ ! -f "package.json" ]; then
     echo -e "${RED}Erro: package.json não encontrado${NC}"
     echo -e "${YELLOW}Execute este script do diretório mobile/${NC}"
+    exit 1
+fi
+
+if [ ! -f "${ROOT_DIR}/backend/Dockerfile" ]; then
+    echo -e "${RED}Erro: backend/Dockerfile não encontrado${NC}"
+    exit 1
+fi
+
+if [ -z "${EXPO_PUBLIC_SUPABASE_ANON_KEY}" ]; then
+    echo -e "${RED}Erro: defina EXPO_PUBLIC_SUPABASE_ANON_KEY ou SUPABASE_ANON_KEY antes do build${NC}"
     exit 1
 fi
 
@@ -55,13 +79,28 @@ fi
 
 echo ""
 
-# Build da imagem Docker (chaves estão hardcoded no código)
-echo -e "${YELLOW}Construindo imagem Docker (Web)...${NC}"
+# Build da imagem Docker
+echo -e "${YELLOW}Construindo imagem Docker (backend + web bundle)...${NC}"
 echo -e "${BLUE}   Isso pode levar alguns minutos...${NC}"
 echo ""
 
 # Build com output em tempo real
-if ! docker build --platform linux/amd64 --progress=plain -t ${IMAGE_NAME}:${IMAGE_TAG} -f Dockerfile .; then
+if ! docker build \
+    --platform linux/amd64 \
+    --progress=plain \
+    -t ${IMAGE_NAME}:${IMAGE_TAG} \
+    -f "${ROOT_DIR}/backend/Dockerfile" \
+    --build-arg EXPO_PUBLIC_SUPABASE_URL="${EXPO_PUBLIC_SUPABASE_URL}" \
+    --build-arg EXPO_PUBLIC_SUPABASE_ANON_KEY="${EXPO_PUBLIC_SUPABASE_ANON_KEY}" \
+    --build-arg EXPO_PUBLIC_AGENT_IA_URL="${EXPO_PUBLIC_AGENT_IA_URL}" \
+    --build-arg EXPO_PUBLIC_AGENT_IA_SSE_URL="${EXPO_PUBLIC_AGENT_IA_SSE_URL}" \
+    --build-arg EXPO_PUBLIC_AGENT_IA_AUTH_TOKEN="${EXPO_PUBLIC_AGENT_IA_AUTH_TOKEN}" \
+    --build-arg EXPO_PUBLIC_SSE_AUTH_TOKEN="${EXPO_PUBLIC_SSE_AUTH_TOKEN}" \
+    --build-arg EXPO_PUBLIC_VALIDATION_URL="${EXPO_PUBLIC_VALIDATION_URL}" \
+    --build-arg EXPO_PUBLIC_LAB_WHATSAPP="${EXPO_PUBLIC_LAB_WHATSAPP}" \
+    --build-arg EXPO_PUBLIC_APP_ENV="${EXPO_PUBLIC_APP_ENV}" \
+    --build-arg EXPO_PUBLIC_AUTH_ENFORCE_EXPIRY="${EXPO_PUBLIC_AUTH_ENFORCE_EXPIRY}" \
+    "${ROOT_DIR}"; then
     echo ""
     echo -e "${RED}Erro ao construir imagem${NC}"
     exit 1
@@ -98,5 +137,5 @@ echo -e "${GREEN}========================================${NC}"
 echo ""
 echo -e "${BLUE}Imagem: ${IMAGE_NAME}:${IMAGE_TAG}${NC}"
 echo -e "${BLUE}Tamanho: ${IMAGE_SIZE}${NC}"
-echo -e "${BLUE}Plataforma: Web (Navegadores)${NC}"
+echo -e "${BLUE}Plataforma: Web (Node/Express + Expo bundle)${NC}"
 echo ""

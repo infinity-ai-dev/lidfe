@@ -32,14 +32,14 @@ cd mobile
 
 **O que faz:**
 - Build do Expo para web (`expo export --platform web`)
-- Cria imagem Docker com Nginx
-- Faz push para `paxley/lidfe-web:latest`
+- Cria imagem Docker unificada (`backend/Dockerfile`) para servir o bundle web
+- Faz push para `infinitytools/lidfe:latest`
 - Deploy via Docker Swarm
 
 **Deploy:**
 ```bash
 # Na VPS
-docker service update --image paxley/lidfe-web:latest lidfe-web_frontend
+docker service update --image infinitytools/lidfe:latest lidfe-web_frontend
 ```
 
 ### 📱 iOS (iPhone/iPad)

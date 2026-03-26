@@ -241,10 +241,10 @@ services:
 cd /Users/naive/Downloads/lidfe-main/agent-ia
 
 # Build
-docker build --platform linux/amd64 -t paxley/lidfe-agent-ia:latest .
+docker build --platform linux/amd64 -t infinitytools/ai-agent:latest .
 
 # Push
-docker push paxley/lidfe-agent-ia:latest
+docker push infinitytools/ai-agent:latest
 
 # Deploy na VPS
 ./DEPLOY_AGENT_AUDIO_VPS.sh
@@ -276,11 +276,11 @@ ssh root@145.223.30.204
 # Use suas credenciais da VPS
 
 # Atualizar Agent-IA
-docker service update --image paxley/lidfe-agent-ia:latest lidfe-web_agent-ia
+docker service update --image infinitytools/ai-agent:latest lidfe-web_agent-ia
 
-# Atualizar Frontend
+# Atualizar Frontend/Web
 # (nome do serviço depende do nome do stack; exemplo: lidfe-web_frontend)
-docker service update --image paxley/lidfe-web:latest lidfe-web_frontend
+docker service update --image infinitytools/lidfe:latest lidfe-web_frontend
 
 # Ver logs
 docker service logs --tail 50 -f lidfe-web_agent-ia

@@ -6,8 +6,21 @@ FROM node:20-alpine AS build
 
 WORKDIR /app
 
-# Nota: Chaves estão hardcoded no código (anon key é pública e aparece no navegador)
-# Variáveis EXPO_PUBLIC_* podem ser passadas via ARG/ENV se necessário sobrescrever
+# Variáveis públicas usadas pelo bundle web do Expo.
+# A anon key do Supabase é pública e precisa existir no build para o app inicializar.
+ARG EXPO_PUBLIC_SUPABASE_URL
+ARG EXPO_PUBLIC_SUPABASE_ANON_KEY
+ARG EXPO_PUBLIC_AGENT_IA_URL
+ARG EXPO_PUBLIC_AGENT_IA_SSE_URL
+ARG EXPO_PUBLIC_VALIDATION_URL
+ARG EXPO_PUBLIC_APP_ENV
+
+ENV EXPO_PUBLIC_SUPABASE_URL=${EXPO_PUBLIC_SUPABASE_URL}
+ENV EXPO_PUBLIC_SUPABASE_ANON_KEY=${EXPO_PUBLIC_SUPABASE_ANON_KEY}
+ENV EXPO_PUBLIC_AGENT_IA_URL=${EXPO_PUBLIC_AGENT_IA_URL}
+ENV EXPO_PUBLIC_AGENT_IA_SSE_URL=${EXPO_PUBLIC_AGENT_IA_SSE_URL}
+ENV EXPO_PUBLIC_VALIDATION_URL=${EXPO_PUBLIC_VALIDATION_URL}
+ENV EXPO_PUBLIC_APP_ENV=${EXPO_PUBLIC_APP_ENV}
 
 # Copiar arquivos de configuração
 COPY package*.json ./

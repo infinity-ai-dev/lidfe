@@ -1,6 +1,26 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
-import { Platform, StyleSheet, ScrollView, RefreshControl, View, useWindowDimensions, TouchableOpacity, Alert } from 'react-native';
-import { Text, Card, Button, ActivityIndicator, useTheme, Chip, DataTable, Snackbar, Banner, ProgressBar } from 'react-native-paper';
+import {
+  Platform,
+  StyleSheet,
+  ScrollView,
+  RefreshControl,
+  View,
+  useWindowDimensions,
+  TouchableOpacity,
+  Alert,
+} from 'react-native';
+import {
+  Text,
+  Card,
+  Button,
+  ActivityIndicator,
+  useTheme,
+  Chip,
+  DataTable,
+  Snackbar,
+  Banner,
+  ProgressBar,
+} from 'react-native-paper';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { supabase } from '@/services/supabase/client';
 import { APP_CONFIG } from '@/utils/constants';
@@ -13,6 +33,8 @@ import { PDFPreviewModal } from '@/components/exames/PDFPreviewModal';
 import { MaterialIcons } from '@expo/vector-icons';
 import { exameAnalysisService } from '@/services/exame-analysis';
 import { useFontScale } from '@/hooks/useFontScale';
+import { pickNativeExamUploadAsset, uploadNativeExamAsset } from '@/services/native-exam-upload';
+import { useAppStore } from '@/store/appStore';
 
 interface Exame {
   id: number; // ID da task_listaexames
@@ -58,11 +80,22 @@ interface GeneralGuideDocument {
   sourceExam: Exame;
 }
 
+type ExamesTab = 'todos' | 'analisados' | 'pendentes' | 'arquivados';
+
+interface ResultadoSessionSummary {
+  threadId: string;
+  sessionAt: string;
+  totalExames: number;
+  completedExames: number;
+  percentage: number;
+  progress: number;
+}
+
 export default function ExamesScreen() {
   const theme = useTheme();
   const { scale } = useFontScale();
   const router = useRouter();
-  const params = useLocalSearchParams<{ threadId?: string | string[] }>();
+  const params = useLocalSearchParams<{ threadId?: string | string[]; tab?: string | string[] }>();
   const threadIdFilter = useMemo(() => {
     const raw = Array.isArray(params.threadId) ? params.threadId[0] : params.threadId;
     if (!raw) return null;
@@ -72,12 +105,20 @@ export default function ExamesScreen() {
       return raw;
     }
   }, [params.threadId]);
+  const requestedTab = useMemo<ExamesTab | null>(() => {
+    const raw = Array.isArray(params.tab) ? params.tab[0] : params.tab;
+    if (raw === 'todos' || raw === 'analisados' || raw === 'pendentes' || raw === 'arquivados') {
+      return raw;
+    }
+    return null;
+  }, [params.tab]);
   const { width } = useWindowDimensions();
   const isDesktopWeb = Platform.OS === 'web' && width >= 1024;
+  const currentThreadId = useAppStore(state => state.idthreadConversa);
   const [exames, setExames] = useState<Exame[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
-  const [activeTab, setActiveTab] = useState<'todos' | 'analisados' | 'pendentes' | 'arquivados'>('todos');
+  const [activeTab, setActiveTab] = useState<ExamesTab>(requestedTab || 'todos');
   const [previewPdfUrl, setPreviewPdfUrl] = useState<string | null>(null);
   const [previewTitle, setPreviewTitle] = useState<string>('');
   const [snackbarVisible, setSnackbarVisible] = useState(false);
@@ -85,6 +126,7 @@ export default function ExamesScreen() {
   const [downloadingPdfId, setDownloadingPdfId] = useState<number | null>(null);
   const [examesSemPdf, setExamesSemPdf] = useState<Exame[]>([]);
   const [generatingPdfId, setGeneratingPdfId] = useState<number | null>(null);
+  const [uploadingResultExamId, setUploadingResultExamId] = useState<number | null>(null);
   const [bannerVisible, setBannerVisible] = useState(false);
   // Controla exibição do aviso simples de novos dados no histórico
   const [newDataVisible, setNewDataVisible] = useState(false);
@@ -108,10 +150,15 @@ export default function ExamesScreen() {
   }, [activeTab]);
 
   useEffect(() => {
+    if (requestedTab) {
+      setActiveTab(requestedTab);
+      return;
+    }
+
     if (threadIdFilter) {
       setActiveTab('todos');
     }
-  }, [threadIdFilter]);
+  }, [threadIdFilter, requestedTab]);
 
   // Exibe notificação simples e chama atenção para novos dados no histórico
   const showNewDataNotice = (message: string) => {
@@ -131,7 +178,9 @@ export default function ExamesScreen() {
 
   const loadExames = async (options?: { suppressNewNotice?: boolean }) => {
     try {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) return;
 
       const previousCount = exames.length;
@@ -145,11 +194,13 @@ export default function ExamesScreen() {
         .order('created_at', { ascending: false });
 
       if (error) throw error;
-      
+
       // Buscar análises concluídas com relacionamento (inclui exames enviados via chat)
       const { data: analisesData } = await supabase
         .from('analises_exames')
-        .select('id, url_arquivo, status, interpretacao, tipo_arquivo, tipo_exame, created_at, fontes, task_exame_id')
+        .select(
+          'id, url_arquivo, status, interpretacao, tipo_arquivo, tipo_exame, created_at, fontes, task_exame_id'
+        )
         .eq('user_id', user.id)
         .eq('status', 'concluida')
         .order('created_at', { ascending: false });
@@ -177,9 +228,7 @@ export default function ExamesScreen() {
 
       // Mapear análises para identificar quais URLs já estão em tasks_listaexames
       const urlsEmTasksListaExames = new Set(
-        (data || [])
-          .map((e: any) => e.urlfoto)
-          .filter((url: any) => url && url.trim().length > 0)
+        (data || []).map((e: any) => e.urlfoto).filter((url: any) => url && url.trim().length > 0)
       );
 
       // Marcar exames que foram analisados pelo sistema
@@ -188,24 +237,26 @@ export default function ExamesScreen() {
       // 2. Tem urlfoto (arquivo enviado) E essa URL corresponde a uma análise concluída
       const newExames = (data || []).map((exame: any) => {
         // Buscar análise correspondente via relacionamento (mais eficiente)
-        const analisePorRelacionamento = analisesData?.find((a: any) => a.task_exame_id === exame.id);
-        
+        const analisePorRelacionamento = analisesData?.find(
+          (a: any) => a.task_exame_id === exame.id
+        );
+
         // Fallback: buscar por urlfoto se não houver relacionamento
         const analisePorUrl = analisesData?.find((a: any) => a.url_arquivo === exame.urlfoto);
-        
+
         // Priorizar análise por relacionamento, senão usar por URL
         const analiseCorrespondente = analisePorRelacionamento || analisePorUrl;
-        
+
         const temUrlfoto = exame.urlfoto && exame.urlfoto.trim().length > 0;
         const urlFoiAnalisada = temUrlfoto && urlsAnalisadas.has(exame.urlfoto);
         const temRelacionamento = !!analisePorRelacionamento;
-        
+
         const interpretacao = analiseCorrespondente?.interpretacao || exame.interpretacao;
         const fontes = analiseCorrespondente?.fontes || exame.fontes;
-        
+
         // Foi analisado se tem relacionamento direto OU urlfoto foi analisada
         const foi_analisado = temRelacionamento || urlFoiAnalisada;
-        
+
         // Detectar se é guia geral pelo título ou campo tipo_exame
         const tituloLower = (exame.titulo || '').toLowerCase();
         const isGeneralGuideTask =
@@ -233,11 +284,16 @@ export default function ExamesScreen() {
           // Criar objeto Exame a partir da análise
           // Extrair nome do arquivo da URL para usar como título
           const fileUrl = (analise.url_arquivo || '').toString();
-          const fileName = fileUrl ? fileUrl.split('/').pop() || 'Exame analisado' : 'Exame analisado';
+          const fileName = fileUrl
+            ? fileUrl.split('/').pop() || 'Exame analisado'
+            : 'Exame analisado';
           const fileExtension = fileName.split('.').pop() || '';
-          const tipoExame = analise.tipo_arquivo === 'pdf' ? 'PDF' : 
-                           fileExtension.toUpperCase() === 'PDF' ? 'PDF' : 
-                           'Imagem';
+          const tipoExame =
+            analise.tipo_arquivo === 'pdf'
+              ? 'PDF'
+              : fileExtension.toUpperCase() === 'PDF'
+                ? 'PDF'
+                : 'Imagem';
           const tipoExameRaw = (analise.tipo_exame || '').toString().toLowerCase();
           const isGeneralGuide =
             tipoExameRaw.includes('guia geral') ||
@@ -274,16 +330,16 @@ export default function ExamesScreen() {
 
       // Combinar exames de tasks_listaexames com exames apenas analisados
       const todosExames = [...newExames, ...examesApenasAnalisados];
-      
+
       // Ordenar por data de criação (mais recentes primeiro)
       todosExames.sort((a, b) => {
         const dateA = new Date(a.created_at).getTime();
         const dateB = new Date(b.created_at).getTime();
         return dateB - dateA;
       });
-      
+
       setExames(todosExames);
-      
+
       // Identificar exames sem PDF que deveriam ter
       // Considerar apenas exames criados há mais de 2 minutos sem urlpdf
       // (dar tempo para a geração automática acontecer)
@@ -315,12 +371,14 @@ export default function ExamesScreen() {
 
   useEffect(() => {
     loadExames();
-    
+
     // Configurar subscription para novos exames
     let channel: any;
-    
+
     const setupSubscription = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) return;
 
       channel = supabase
@@ -333,7 +391,7 @@ export default function ExamesScreen() {
             table: 'tasks_listaexames', // Ouvir mudanças na tabela tasks_listaexames
             filter: `user_id=eq.${user.id}`,
           },
-          (payload) => {
+          payload => {
             console.log('[Exames] Nova guia de exame detectada:', payload);
             // Aviso simples de novos dados no histórico
             showNewDataNotice('Nova guia de exame disponível!');
@@ -368,7 +426,7 @@ export default function ExamesScreen() {
     const byTaskExameId = new Set<number>();
     const byResultadoId = new Set<number>();
 
-    resultadosUploads.forEach((resultado) => {
+    resultadosUploads.forEach(resultado => {
       if (typeof resultado.id === 'number') {
         byResultadoId.add(resultado.id);
       }
@@ -388,7 +446,34 @@ export default function ExamesScreen() {
     return '';
   };
 
-  const filteredExames = exames.filter((exame) => {
+  const formatDate = (dateString: string) => {
+    try {
+      return format(new Date(dateString), "dd 'de' MMMM 'de' yyyy", { locale: ptBR });
+    } catch {
+      return dateString;
+    }
+  };
+
+  const formatTime = (dateString: string) => {
+    try {
+      return format(new Date(dateString), 'HH:mm', { locale: ptBR });
+    } catch {
+      return '';
+    }
+  };
+
+  const getThreadDate = (threadId?: string | null) => {
+    if (!threadId) return null;
+    const parts = threadId.split(':');
+    const last = parts[parts.length - 1];
+    const timestamp = Number(last);
+    if (!Number.isFinite(timestamp) || timestamp <= 0) return null;
+    const date = new Date(timestamp);
+    if (Number.isNaN(date.getTime())) return null;
+    return date;
+  };
+
+  const filteredExames = exames.filter(exame => {
     if (activeTab === 'analisados') {
       // Exames analisados: apenas os que foram enviados (tem urlfoto)
       // E analisados pelo sistema (tem análise concluída)
@@ -409,7 +494,7 @@ export default function ExamesScreen() {
   });
 
   const resultadosTabExames = useMemo(() => {
-    return exames.filter((exame) => {
+    return exames.filter(exame => {
       if (exame._from_analises_exames || exame.is_general_guide) {
         return false;
       }
@@ -422,11 +507,65 @@ export default function ExamesScreen() {
     });
   }, [exames, threadIdFilter]);
 
+  const resultadosSessionSummaries = useMemo<ResultadoSessionSummary[]>(() => {
+    const map = new Map<string, ResultadoSessionSummary>();
+
+    resultadosTabExames.forEach(exame => {
+      const threadId = exame.id_threadconversa;
+      if (!threadId) return;
+
+      const sessionDate = getThreadDate(threadId);
+      const sessionAt = sessionDate?.toISOString() || exame.created_at;
+      const current = map.get(threadId);
+      const isCompleted =
+        (typeof exame.resultado_id === 'number' &&
+          resultadosLookup.byResultadoId.has(exame.resultado_id)) ||
+        resultadosLookup.byTaskExameId.has(exame.id);
+
+      if (!current) {
+        map.set(threadId, {
+          threadId,
+          sessionAt,
+          totalExames: 1,
+          completedExames: isCompleted ? 1 : 0,
+          percentage: 0,
+          progress: 0,
+        });
+        return;
+      }
+
+      current.totalExames += 1;
+      if (isCompleted) {
+        current.completedExames += 1;
+      }
+
+      const currentSessionTime = new Date(current.sessionAt).getTime();
+      const nextSessionTime = new Date(sessionAt).getTime();
+      if (nextSessionTime > currentSessionTime) {
+        current.sessionAt = sessionAt;
+      }
+    });
+
+    return [...map.values()]
+      .map(session => {
+        const progress =
+          session.totalExames > 0 ? session.completedExames / session.totalExames : 0;
+        return {
+          ...session,
+          progress,
+          percentage: session.totalExames > 0 ? Math.round(progress * 100) : 0,
+        };
+      })
+      .sort((a, b) => {
+        return new Date(b.sessionAt).getTime() - new Date(a.sessionAt).getTime();
+      });
+  }, [resultadosLookup, resultadosTabExames]);
+
   // Encontrar a guia geral mais recente para o botão de visualização
   // Prioriza a guia geral consolidada (guia_geral_url). Como fallback, usa apenas
   // documentos explicitamente marcados como guia geral, nunca um PDF individual.
   const latestGeneralGuide = useMemo<GeneralGuideDocument | null>(() => {
-    const relevantExames = exames.filter((exame) => {
+    const relevantExames = exames.filter(exame => {
       if (exame._from_analises_exames) {
         return exame.is_general_guide === true;
       }
@@ -440,7 +579,7 @@ export default function ExamesScreen() {
 
     const candidates: GeneralGuideDocument[] = [];
 
-    relevantExames.forEach((exame) => {
+    relevantExames.forEach(exame => {
       const guiaGeralUrl = getDownloadableUrl(exame.guia_geral_url);
       if (guiaGeralUrl) {
         candidates.push({
@@ -468,7 +607,7 @@ export default function ExamesScreen() {
 
     const uniqueDocuments = new Map<string, GeneralGuideDocument>();
 
-    candidates.forEach((document) => {
+    candidates.forEach(document => {
       const batchId = document.sourceExam.guia_geral_batch_id || document.url;
       const current = uniqueDocuments.get(batchId);
 
@@ -484,29 +623,12 @@ export default function ExamesScreen() {
       }
     });
 
-    return [...uniqueDocuments.values()].sort((a, b) => {
-      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
-    })[0] || null;
+    return (
+      [...uniqueDocuments.values()].sort((a, b) => {
+        return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+      })[0] || null
+    );
   }, [exames, threadIdFilter]);
-
-  const formatDate = (dateString: string) => {
-    try {
-      return format(new Date(dateString), "dd 'de' MMMM 'de' yyyy", { locale: ptBR });
-    } catch {
-      return dateString;
-    }
-  };
-
-  const getThreadDate = (threadId?: string | null) => {
-    if (!threadId) return null;
-    const parts = threadId.split(':');
-    const last = parts[parts.length - 1];
-    const timestamp = Number(last);
-    if (!Number.isFinite(timestamp) || timestamp <= 0) return null;
-    const date = new Date(timestamp);
-    if (Number.isNaN(date.getTime())) return null;
-    return date;
-  };
 
   const anamneseDateLabel = useMemo(() => {
     const threadDate = getThreadDate(threadIdFilter);
@@ -515,7 +637,10 @@ export default function ExamesScreen() {
   }, [threadIdFilter]);
 
   const isResultadoEnviado = (exame: Exame) => {
-    if (typeof exame.resultado_id === 'number' && resultadosLookup.byResultadoId.has(exame.resultado_id)) {
+    if (
+      typeof exame.resultado_id === 'number' &&
+      resultadosLookup.byResultadoId.has(exame.resultado_id)
+    ) {
       return true;
     }
     return resultadosLookup.byTaskExameId.has(exame.id);
@@ -527,7 +652,7 @@ export default function ExamesScreen() {
     });
 
     const map = new Map<number, ResultadoUpload>();
-    entries.forEach((resultado) => {
+    entries.forEach(resultado => {
       if (typeof resultado.task_exame_id !== 'number') return;
       if (!map.has(resultado.task_exame_id)) {
         map.set(resultado.task_exame_id, resultado);
@@ -539,8 +664,11 @@ export default function ExamesScreen() {
 
   const resultadosProgress = useMemo(() => {
     const total = resultadosTabExames.length;
-    const completed = resultadosTabExames.filter((exame) => {
-      if (typeof exame.resultado_id === 'number' && resultadosLookup.byResultadoId.has(exame.resultado_id)) {
+    const completed = resultadosTabExames.filter(exame => {
+      if (
+        typeof exame.resultado_id === 'number' &&
+        resultadosLookup.byResultadoId.has(exame.resultado_id)
+      ) {
         return true;
       }
       return resultadosLookup.byTaskExameId.has(exame.id);
@@ -551,7 +679,9 @@ export default function ExamesScreen() {
     return { total, completed, percentage, progress };
   }, [resultadosTabExames, resultadosLookup]);
 
-  const showFloatingResultadosProgress = activeTab === 'pendentes' && resultadosTabExames.length > 0;
+  const showFloatingResultadosProgress =
+    activeTab === 'pendentes' && !!threadIdFilter && resultadosTabExames.length > 0;
+  const showResultadosSessionHistory = activeTab === 'pendentes' && !threadIdFilter;
 
   const renderGuiaStatus = (exame: Exame, options?: { compact?: boolean }) => {
     const concluido = isResultadoEnviado(exame);
@@ -605,7 +735,81 @@ export default function ExamesScreen() {
     setPreviewTitle('');
   };
 
+  const handleNativeResultUpload = async (exame: Exame) => {
+    try {
+      setUploadingResultExamId(exame.id);
+
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
+      if (!user) {
+        throw new Error('Usuário não autenticado');
+      }
+
+      const pickedAsset = await pickNativeExamUploadAsset('any');
+      if (!pickedAsset) {
+        return;
+      }
+
+      const upload = await uploadNativeExamAsset(pickedAsset);
+
+      const { data: insertedResultado, error: insertError } = await supabase
+        .from('exames_resultados')
+        .insert({
+          user_id: user.id,
+          task_exame_id: exame.id,
+          titulo: exame.titulo || null,
+          file_url: upload.fileUrl,
+          file_name: upload.fileName,
+          mime_type: upload.mimeType,
+          file_type: upload.fileType,
+          source: 'interpretacao',
+          storage_bucket: upload.storageBucket,
+          storage_path: upload.storagePath,
+        })
+        .select('id')
+        .single();
+
+      if (insertError) {
+        throw insertError;
+      }
+
+      let analysisError: string | null = null;
+      try {
+        await exameAnalysisService.analyzeExame({
+          fileUrl: upload.fileUrl,
+          fileType: upload.fileType,
+          resultadoId: insertedResultado?.id,
+          taskExameId: exame.id,
+        });
+      } catch (error: any) {
+        console.error('[Exames] Erro ao analisar resultado no mobile:', error);
+        analysisError = error?.message || 'Falha ao processar a análise automática.';
+      }
+
+      await loadExames({ suppressNewNotice: true });
+
+      setSnackbarMessage(
+        analysisError
+          ? 'Resultado enviado, mas a análise automática falhou. Tente novamente em instantes.'
+          : 'Resultado enviado com sucesso.'
+      );
+      setSnackbarVisible(true);
+    } catch (error: any) {
+      console.error('[Exames] Erro ao enviar resultado no mobile:', error);
+      setSnackbarMessage(error?.message || 'Não foi possível enviar o resultado.');
+      setSnackbarVisible(true);
+    } finally {
+      setUploadingResultExamId(null);
+    }
+  };
+
   const openResultUpload = (exame: Exame) => {
+    if (!isWeb) {
+      void handleNativeResultUpload(exame);
+      return;
+    }
+
     router.push({
       pathname: '/(tabs)/interpretacao',
       params: { exameId: exame.id.toString() },
@@ -622,8 +826,25 @@ export default function ExamesScreen() {
     });
   };
 
+  const handleOpenResultadosSession = (threadId: string) => {
+    router.push({
+      pathname: '/(tabs)/exames',
+      params: {
+        threadId: encodeURIComponent(threadId),
+        tab: 'pendentes',
+      },
+    });
+  };
+
+  const handleClearThreadFilter = () => {
+    router.replace({
+      pathname: '/(tabs)/exames',
+      params: activeTab === 'pendentes' ? { tab: 'pendentes' } : {},
+    });
+  };
+
   const pickFileWeb = (accept: string): Promise<File | null> => {
-    return new Promise((resolve) => {
+    return new Promise(resolve => {
       const input = document.createElement('input');
       input.type = 'file';
       input.accept = accept;
@@ -673,7 +894,8 @@ export default function ExamesScreen() {
 
   const uploadViaEdgeFunction = async (file: File) => {
     const base64 = await fileToBase64(file);
-    const mime = file.type || (file.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
+    const mime =
+      file.type || (file.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
 
     const { data, error } = await supabase.functions.invoke('upload-exame', {
       body: {
@@ -689,44 +911,72 @@ export default function ExamesScreen() {
   };
 
   const handleUploadGeneral = async (mode: 'pdf' | 'image') => {
-    if (!isWeb) {
-      Alert.alert('Envio disponível no web', 'Abra a versão web para enviar sua Guia Geral de Exames.');
-      return;
-    }
-
     try {
       setGeneralUploading(true);
       setGeneralError(null);
       setGeneralStatus('Selecionando arquivo...');
 
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) {
         throw new Error('Usuário não autenticado');
       }
 
-      const accept = mode === 'pdf' ? 'application/pdf' : 'image/*';
-      const file = await pickFileWeb(accept);
-      if (!file) {
-        setGeneralStatus('Envio cancelado.');
-        return;
+      let uploadResult:
+        | {
+            fileUrl: string;
+            mimeType: string;
+            fileName: string;
+            fileType: 'image' | 'pdf';
+            storageBucket: string | null;
+            storagePath: string | null;
+          }
+        | undefined;
+
+      if (isWeb) {
+        const accept = mode === 'pdf' ? 'application/pdf' : 'image/*';
+        const file = await pickFileWeb(accept);
+        if (!file) {
+          setGeneralStatus('Envio cancelado.');
+          return;
+        }
+
+        setGeneralStatus('Enviando arquivo...');
+        const { fileUrl, mimeType } = await uploadViaEdgeFunction(file);
+        uploadResult = {
+          fileUrl,
+          mimeType,
+          fileName: file.name,
+          fileType: mimeType === 'application/pdf' ? 'pdf' : 'image',
+          storageBucket: null,
+          storagePath: null,
+        };
+      } else {
+        const pickedAsset = await pickNativeExamUploadAsset(mode === 'pdf' ? 'pdf' : 'image');
+        if (!pickedAsset) {
+          setGeneralStatus('Envio cancelado.');
+          return;
+        }
+
+        setGeneralStatus('Enviando arquivo...');
+        uploadResult = await uploadNativeExamAsset(pickedAsset);
       }
 
-      setGeneralStatus('Enviando arquivo...');
-      const { fileUrl, mimeType } = await uploadViaEdgeFunction(file);
+      const { fileUrl, mimeType, fileName, fileType, storageBucket, storagePath } = uploadResult;
 
       setGeneralStatus('Processando análise...');
-      const fileType = mimeType === 'application/pdf' ? 'pdf' : 'image';
-      const uploadRecordPromise = supabase
-        .from('exames_resultados')
-        .insert({
-          user_id: user.id,
-          titulo: 'Guia Geral de Exames',
-          file_url: fileUrl,
-          file_name: file.name,
-          mime_type: mimeType,
-          file_type: fileType,
-          source: 'guia_geral',
-        });
+      const uploadRecordPromise = supabase.from('exames_resultados').insert({
+        user_id: user.id,
+        titulo: 'Guia Geral de Exames',
+        file_url: fileUrl,
+        file_name: fileName,
+        mime_type: mimeType,
+        file_type: fileType,
+        source: 'guia_geral',
+        storage_bucket: storageBucket,
+        storage_path: storagePath,
+      });
 
       const analysisPromise = exameAnalysisService.analyzeExame({ fileUrl, fileType });
 
@@ -769,10 +1019,6 @@ export default function ExamesScreen() {
   };
 
   const handleUploadAnamneseGeral = async (mode: 'pdf' | 'image') => {
-    if (!isWeb) {
-      Alert.alert('Envio disponível no web', 'Abra a versão web para enviar resultados de anamnese.');
-      return;
-    }
     if (!threadIdFilter) {
       Alert.alert('Selecione uma anamnese', 'Abra uma sessão no histórico para enviar resultados.');
       return;
@@ -783,37 +1029,70 @@ export default function ExamesScreen() {
       setAnamneseError(null);
       setAnamneseStatus('Selecionando arquivo...');
 
-      const { data: { user } } = await supabase.auth.getUser();
+      const {
+        data: { user },
+      } = await supabase.auth.getUser();
       if (!user) {
         throw new Error('Usuário não autenticado');
       }
 
-      const accept = mode === 'pdf' ? 'application/pdf' : 'image/*';
-      const file = await pickFileWeb(accept);
-      if (!file) {
-        setAnamneseStatus('Envio cancelado.');
-        return;
+      let uploadResult:
+        | {
+            fileUrl: string;
+            mimeType: string;
+            fileName: string;
+            fileType: 'image' | 'pdf';
+            storageBucket: string | null;
+            storagePath: string | null;
+          }
+        | undefined;
+
+      if (isWeb) {
+        const accept = mode === 'pdf' ? 'application/pdf' : 'image/*';
+        const file = await pickFileWeb(accept);
+        if (!file) {
+          setAnamneseStatus('Envio cancelado.');
+          return;
+        }
+
+        setAnamneseStatus('Enviando arquivo...');
+        const { fileUrl, mimeType } = await uploadViaEdgeFunction(file);
+        uploadResult = {
+          fileUrl,
+          mimeType,
+          fileName: file.name,
+          fileType: mimeType === 'application/pdf' ? 'pdf' : 'image',
+          storageBucket: null,
+          storagePath: null,
+        };
+      } else {
+        const pickedAsset = await pickNativeExamUploadAsset(mode === 'pdf' ? 'pdf' : 'image');
+        if (!pickedAsset) {
+          setAnamneseStatus('Envio cancelado.');
+          return;
+        }
+
+        setAnamneseStatus('Enviando arquivo...');
+        uploadResult = await uploadNativeExamAsset(pickedAsset);
       }
 
-      setAnamneseStatus('Enviando arquivo...');
-      const { fileUrl, mimeType } = await uploadViaEdgeFunction(file);
+      const { fileUrl, mimeType, fileName, fileType, storageBucket, storagePath } = uploadResult;
 
       setAnamneseStatus('Processando análise...');
-      const fileType = mimeType === 'application/pdf' ? 'pdf' : 'image';
       const titulo = `Resultados da anamnese (${anamneseDateLabel})`;
 
-      const uploadRecordPromise = supabase
-        .from('exames_resultados')
-        .insert({
-          user_id: user.id,
-          id_threadconversa: threadIdFilter,
-          titulo,
-          file_url: fileUrl,
-          file_name: file.name,
-          mime_type: mimeType,
-          file_type: fileType,
-          source: 'anamnese_geral',
-        });
+      const uploadRecordPromise = supabase.from('exames_resultados').insert({
+        user_id: user.id,
+        id_threadconversa: threadIdFilter,
+        titulo,
+        file_url: fileUrl,
+        file_name: fileName,
+        mime_type: mimeType,
+        file_type: fileType,
+        source: 'anamnese_geral',
+        storage_bucket: storageBucket,
+        storage_path: storagePath,
+      });
 
       const analysisPromise = exameAnalysisService.analyzeExame({ fileUrl, fileType });
 
@@ -834,7 +1113,9 @@ export default function ExamesScreen() {
       }
 
       setAnamneseStatus('Upload concluído. Confira em Exames Analisados.');
-      setSnackbarMessage('Resultados da anamnese enviados! A análise aparecerá em "Exames Analisados".');
+      setSnackbarMessage(
+        'Resultados da anamnese enviados! A análise aparecerá em "Exames Analisados".'
+      );
       setSnackbarVisible(true);
       loadExames({ suppressNewNotice: true });
     } catch (error: any) {
@@ -850,7 +1131,7 @@ export default function ExamesScreen() {
     try {
       setGeneratingPdfId(exame.id);
       setBannerVisible(false);
-      
+
       // Chamar backend do agent-ia para gerar PDF usando service role
       const { data: sessionData, error: sessionError } = await supabase.auth.getSession();
       if (sessionError || !sessionData?.session?.access_token) {
@@ -891,7 +1172,7 @@ export default function ExamesScreen() {
   const handleDownloadFile = async (url: string, title: string, exameId: number) => {
     try {
       setDownloadingPdfId(exameId);
-      
+
       if (Platform.OS === 'web') {
         // No web, abrir o PDF em nova aba para download
         if (typeof window !== 'undefined' && window.document) {
@@ -916,7 +1197,7 @@ export default function ExamesScreen() {
 
         if (downloadResult.status === 200) {
           const isAvailable = await Sharing.isAvailableAsync();
-          
+
           if (isAvailable) {
             await Sharing.shareAsync(downloadResult.uri, {
               mimeType: inferMimeType(fileName),
@@ -955,13 +1236,22 @@ export default function ExamesScreen() {
       <View style={styles.headerOuter}>
         <View style={[styles.headerCard, { backgroundColor: theme.colors.surface }]}>
           <View style={styles.headerContent}>
-            <Text style={[styles.headerTitle, { color: theme.colors.onSurface, fontSize: scale(20) }]}>
+            <Text
+              style={[styles.headerTitle, { color: theme.colors.onSurface, fontSize: scale(20) }]}
+            >
               Histórico de Exames
             </Text>
             {/* Aviso simples de novos dados no histórico */}
             {newDataVisible && (
-              <View style={[styles.newDataBadge, { backgroundColor: theme.colors.primaryContainer }]}>
-                <Text style={[styles.newDataText, { color: theme.colors.onPrimaryContainer, fontSize: scale(12) }]}>
+              <View
+                style={[styles.newDataBadge, { backgroundColor: theme.colors.primaryContainer }]}
+              >
+                <Text
+                  style={[
+                    styles.newDataText,
+                    { color: theme.colors.onPrimaryContainer, fontSize: scale(12) },
+                  ]}
+                >
                   Novos dados
                 </Text>
               </View>
@@ -982,13 +1272,25 @@ export default function ExamesScreen() {
       <View style={styles.tabs}>
         {/* Flutter tem 4 tabs: Guias, Resultados, Prescrições, Exames Analisados.
             Aqui mantemos 3 estados e ajustamos os labels para ficar mais próximo. */}
-        <Chip selected={activeTab === 'todos'} onPress={() => setActiveTab('todos')} style={styles.chip}>
+        <Chip
+          selected={activeTab === 'todos'}
+          onPress={() => setActiveTab('todos')}
+          style={styles.chip}
+        >
           Guias
         </Chip>
-        <Chip selected={activeTab === 'pendentes'} onPress={() => setActiveTab('pendentes')} style={styles.chip}>
+        <Chip
+          selected={activeTab === 'pendentes'}
+          onPress={() => setActiveTab('pendentes')}
+          style={styles.chip}
+        >
           Resultados
         </Chip>
-        <Chip selected={activeTab === 'analisados'} onPress={() => setActiveTab('analisados')} style={styles.chip}>
+        <Chip
+          selected={activeTab === 'analisados'}
+          onPress={() => setActiveTab('analisados')}
+          style={styles.chip}
+        >
           Exames Analisados
         </Chip>
       </View>
@@ -1012,6 +1314,38 @@ export default function ExamesScreen() {
         </View>
       )}
 
+      {threadIdFilter && (
+        <Card
+          style={[
+            styles.threadFilterCard,
+            {
+              backgroundColor: theme.colors.surface,
+              borderWidth: 1,
+              borderColor: theme.colors.outline,
+            },
+          ]}
+        >
+          <Card.Content style={styles.threadFilterContent}>
+            <View style={styles.threadFilterInfo}>
+              <Text
+                style={[
+                  styles.threadFilterTitle,
+                  { color: theme.colors.onSurface, fontSize: scale(16) },
+                ]}
+              >
+                Anamnese - {anamneseDateLabel}
+              </Text>
+              <Text style={{ color: theme.colors.onSurfaceVariant }}>
+                Você está vendo apenas os exames desta sessão.
+              </Text>
+            </View>
+            <Button mode="text" onPress={handleClearThreadFilter}>
+              Ver histórico geral
+            </Button>
+          </Card.Content>
+        </Card>
+      )}
+
       {threadIdFilter && activeTab !== 'pendentes' && (
         <Card
           style={[
@@ -1025,11 +1359,21 @@ export default function ExamesScreen() {
         >
           <Card.Content>
             <View style={styles.generalUploadTop}>
-              <View style={[styles.generalUploadIconWrap, { backgroundColor: theme.colors.primaryContainer }]}>
+              <View
+                style={[
+                  styles.generalUploadIconWrap,
+                  { backgroundColor: theme.colors.primaryContainer },
+                ]}
+              >
                 <MaterialIcons name="assignment" size={20} color={theme.colors.primary} />
               </View>
               <View style={styles.generalUploadTextCol}>
-                <Text style={[styles.generalUploadTitle, { color: theme.colors.onSurface, fontSize: scale(16) }]}>
+                <Text
+                  style={[
+                    styles.generalUploadTitle,
+                    { color: theme.colors.onSurface, fontSize: scale(16) },
+                  ]}
+                >
                   Resultados da anamnese
                 </Text>
                 <Text style={{ color: theme.colors.onSurfaceVariant }}>
@@ -1038,7 +1382,10 @@ export default function ExamesScreen() {
               </View>
               <Chip
                 compact
-                style={[styles.generalUploadChip, { backgroundColor: theme.colors.secondaryContainer }]}
+                style={[
+                  styles.generalUploadChip,
+                  { backgroundColor: theme.colors.secondaryContainer },
+                ]}
                 textStyle={{ color: theme.colors.onSecondaryContainer }}
               >
                 Anamnese
@@ -1046,7 +1393,8 @@ export default function ExamesScreen() {
             </View>
             <View style={styles.generalUploadHint}>
               <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                Assim que a análise estiver pronta, o resultado aparecerá em &quot;Exames Analisados&quot;.
+                Assim que a análise estiver pronta, o resultado aparecerá em &quot;Exames
+                Analisados&quot;.
               </Text>
             </View>
 
@@ -1083,11 +1431,6 @@ export default function ExamesScreen() {
                 Enviar Imagem
               </Button>
             </View>
-            {!isWeb && (
-              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8 }}>
-                Envio disponível apenas na versão web.
-              </Text>
-            )}
           </Card.Content>
         </Card>
       )}
@@ -1105,11 +1448,21 @@ export default function ExamesScreen() {
         >
           <Card.Content>
             <View style={styles.generalUploadTop}>
-              <View style={[styles.generalUploadIconWrap, { backgroundColor: theme.colors.primaryContainer }]}>
+              <View
+                style={[
+                  styles.generalUploadIconWrap,
+                  { backgroundColor: theme.colors.primaryContainer },
+                ]}
+              >
                 <MaterialIcons name="folder-shared" size={20} color={theme.colors.primary} />
               </View>
               <View style={styles.generalUploadTextCol}>
-                <Text style={[styles.generalUploadTitle, { color: theme.colors.onSurface, fontSize: scale(16) }]}>
+                <Text
+                  style={[
+                    styles.generalUploadTitle,
+                    { color: theme.colors.onSurface, fontSize: scale(16) },
+                  ]}
+                >
                   Guia Geral de Exames
                 </Text>
                 <Text style={{ color: theme.colors.onSurfaceVariant }}>
@@ -1122,7 +1475,9 @@ export default function ExamesScreen() {
             {!latestGeneralGuide && (
               <View style={styles.generalUploadHint}>
                 <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                  {'Assim que a análise estiver pronta, o resultado aparecerá em "Exames Analisados".'}
+                  {
+                    'Assim que a análise estiver pronta, o resultado aparecerá em "Exames Analisados".'
+                  }
                 </Text>
               </View>
             )}
@@ -1139,7 +1494,13 @@ export default function ExamesScreen() {
                 <Button
                   mode="contained"
                   icon="download"
-                  onPress={() => handleDownloadFile(latestGeneralGuide.url, latestGeneralGuide.title, latestGeneralGuide.id)}
+                  onPress={() =>
+                    handleDownloadFile(
+                      latestGeneralGuide.url,
+                      latestGeneralGuide.title,
+                      latestGeneralGuide.id
+                    )
+                  }
                   loading={downloadingPdfId === latestGeneralGuide.id}
                   disabled={downloadingPdfId === latestGeneralGuide.id}
                 >
@@ -1181,11 +1542,6 @@ export default function ExamesScreen() {
                     Enviar Imagem
                   </Button>
                 </View>
-                {!isWeb && (
-                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8 }}>
-                    Envio disponível apenas na versão web.
-                  </Text>
-                )}
               </>
             )}
           </Card.Content>
@@ -1214,10 +1570,9 @@ export default function ExamesScreen() {
             icon="alert-circle"
             style={styles.banner}
           >
-            {examesSemPdf.length === 1 
+            {examesSemPdf.length === 1
               ? `Não foi possível gerar a guia do exame "${examesSemPdf[0].titulo}". Os exames foram registrados, mas a guia em PDF não pôde ser gerada. Você pode tentar gerar novamente.`
-              : `Não foi possível gerar a guia de ${examesSemPdf.length} exames. Os exames foram registrados, mas as guias em PDF não puderam ser geradas. Você pode tentar gerar novamente.`
-            }
+              : `Não foi possível gerar a guia de ${examesSemPdf.length} exames. Os exames foram registrados, mas as guias em PDF não puderam ser geradas. Você pode tentar gerar novamente.`}
           </Banner>
         </View>
       )}
@@ -1238,28 +1593,39 @@ export default function ExamesScreen() {
                   <DataTable.Title style={styles.colData}>Data</DataTable.Title>
                   <DataTable.Title style={styles.colAcao}>PDF</DataTable.Title>
                   <DataTable.Title style={styles.colAcao}>Interpretação</DataTable.Title>
-                  {activeTab === 'todos' && <DataTable.Title style={styles.colStatus}>Status</DataTable.Title>}
+                  {activeTab === 'todos' && (
+                    <DataTable.Title style={styles.colStatus}>Status</DataTable.Title>
+                  )}
                 </>
               )}
             </DataTable.Header>
 
-            {filteredExames.map((exame) => {
+            {filteredExames.map(exame => {
               if (activeTab === 'analisados') {
                 const downloadUrl = getDownloadUrl(exame);
                 return (
                   <DataTable.Row key={exame.id}>
                     <DataTable.Cell style={styles.colExame}>
                       <TouchableOpacity onPress={() => openInterpretation(exame)}>
-                        <Text style={{ color: '#1976d2', textDecorationLine: 'underline' }} numberOfLines={2}>{exame.titulo || 'Exame'}</Text>
+                        <Text
+                          style={{ color: '#1976d2', textDecorationLine: 'underline' }}
+                          numberOfLines={2}
+                        >
+                          {exame.titulo || 'Exame'}
+                        </Text>
                       </TouchableOpacity>
                     </DataTable.Cell>
-                    <DataTable.Cell style={styles.colData}>{formatDate(exame.created_at)}</DataTable.Cell>
+                    <DataTable.Cell style={styles.colData}>
+                      {formatDate(exame.created_at)}
+                    </DataTable.Cell>
                     <DataTable.Cell>
                       {downloadUrl ? (
                         <Button
                           mode="text"
                           icon="download"
-                          onPress={() => handleDownloadFile(downloadUrl, exame.titulo || 'Exame', exame.id)}
+                          onPress={() =>
+                            handleDownloadFile(downloadUrl, exame.titulo || 'Exame', exame.id)
+                          }
                           loading={downloadingPdfId === exame.id}
                           disabled={downloadingPdfId === exame.id}
                           compact
@@ -1281,7 +1647,9 @@ export default function ExamesScreen() {
                 <DataTable.Row key={exame.id}>
                   <DataTable.Cell style={styles.colExame}>
                     <View style={styles.tableTitleCell}>
-                      <Text style={styles.tableTitleText} numberOfLines={2}>{exame.titulo || 'Exame'}</Text>
+                      <Text style={styles.tableTitleText} numberOfLines={2}>
+                        {exame.titulo || 'Exame'}
+                      </Text>
                       {exame.is_general_guide && (
                         <Chip compact style={styles.generalGuideChip} icon="file-document">
                           Guia geral
@@ -1289,7 +1657,9 @@ export default function ExamesScreen() {
                       )}
                     </View>
                   </DataTable.Cell>
-                  <DataTable.Cell style={styles.colData}>{formatDate(exame.created_at)}</DataTable.Cell>
+                  <DataTable.Cell style={styles.colData}>
+                    {formatDate(exame.created_at)}
+                  </DataTable.Cell>
                   <DataTable.Cell style={styles.colAcao}>
                     {exame.urlpdf ? (
                       <View style={{ flexDirection: 'row', gap: 4, flexWrap: 'wrap' }}>
@@ -1304,7 +1674,9 @@ export default function ExamesScreen() {
                         <Button
                           mode="text"
                           icon="download"
-                          onPress={() => handleDownloadFile(exame.urlpdf!, exame.titulo || 'Exame', exame.id)}
+                          onPress={() =>
+                            handleDownloadFile(exame.urlpdf!, exame.titulo || 'Exame', exame.id)
+                          }
                           loading={downloadingPdfId === exame.id}
                           disabled={downloadingPdfId === exame.id}
                           compact
@@ -1312,47 +1684,53 @@ export default function ExamesScreen() {
                           Baixar
                         </Button>
                       </View>
-                  ) : exame.foi_analisado ? (
-                    <Text style={{ fontSize: scale(12), color: theme.colors.primary, fontStyle: 'italic' }}>
-                      Concluído
-                    </Text>
-                  ) : (
-                    <Button
-                      mode="outlined"
-                      icon="file-pdf-box"
-                      onPress={() => handleGeneratePDF(exame)}
-                      loading={generatingPdfId === exame.id}
-                      disabled={generatingPdfId === exame.id}
-                      compact
-                    >
-                      {generatingPdfId === exame.id ? 'Gerando...' : 'Gerar PDF'}
-                    </Button>
-                  )}
-                </DataTable.Cell>
-                <DataTable.Cell style={styles.colAcao}>
-                  {exame.foi_analisado ? (
-                    <Chip compact icon="check-circle">
-                      Concluído
-                    </Chip>
-                  ) : (
-                    <Button
-                      mode="text"
-                      onPress={() =>
-                        router.push({
-                          pathname: '/exames/interpretacao',
-                          params: { exameId: exame.id.toString() },
-                        })
-                      }
-                    >
-                      Ver
-                    </Button>
-                  )}
-                </DataTable.Cell>
-                {activeTab === 'todos' && (
-                  <DataTable.Cell style={styles.colStatus}>
-                    {renderGuiaStatus(exame, { compact: true })}
+                    ) : exame.foi_analisado ? (
+                      <Text
+                        style={{
+                          fontSize: scale(12),
+                          color: theme.colors.primary,
+                          fontStyle: 'italic',
+                        }}
+                      >
+                        Concluído
+                      </Text>
+                    ) : (
+                      <Button
+                        mode="outlined"
+                        icon="file-pdf-box"
+                        onPress={() => handleGeneratePDF(exame)}
+                        loading={generatingPdfId === exame.id}
+                        disabled={generatingPdfId === exame.id}
+                        compact
+                      >
+                        {generatingPdfId === exame.id ? 'Gerando...' : 'Gerar PDF'}
+                      </Button>
+                    )}
                   </DataTable.Cell>
-                )}
+                  <DataTable.Cell style={styles.colAcao}>
+                    {exame.foi_analisado ? (
+                      <Chip compact icon="check-circle">
+                        Concluído
+                      </Chip>
+                    ) : (
+                      <Button
+                        mode="text"
+                        onPress={() =>
+                          router.push({
+                            pathname: '/exames/interpretacao',
+                            params: { exameId: exame.id.toString() },
+                          })
+                        }
+                      >
+                        Ver
+                      </Button>
+                    )}
+                  </DataTable.Cell>
+                  {activeTab === 'todos' && (
+                    <DataTable.Cell style={styles.colStatus}>
+                      {renderGuiaStatus(exame, { compact: true })}
+                    </DataTable.Cell>
+                  )}
                 </DataTable.Row>
               );
             })}
@@ -1367,275 +1745,432 @@ export default function ExamesScreen() {
               ]}
               refreshControl={<RefreshControl refreshing={refreshing} onRefresh={onRefresh} />}
             >
-            {(activeTab === 'pendentes' ? resultadosTabExames.length === 0 : filteredExames.length === 0) ? (
-              <Card style={styles.emptyCard}>
-                <Card.Content>
-                  <Text variant="bodyLarge" style={{ textAlign: 'center' }}>
-                    {activeTab === 'pendentes' ? 'Nenhum exame aguardando resultado' : 'Nenhum exame encontrado'}
-                  </Text>
-                </Card.Content>
-              </Card>
-            ) : (
-              (activeTab === 'pendentes' ? resultadosTabExames : filteredExames).map((item) => {
-                if (activeTab === 'pendentes') {
-                  const exame = item as Exame;
-                  const resultado = latestResultadoByTaskId.get(exame.id);
-                  const resultadoEnviado = isResultadoEnviado(exame);
-                  const downloadUrl = resultado ? getDownloadableUrl(resultado.file_url) : '';
+              {(
+                activeTab === 'pendentes'
+                  ? showResultadosSessionHistory
+                    ? resultadosSessionSummaries.length === 0
+                    : resultadosTabExames.length === 0
+                  : filteredExames.length === 0
+              ) ? (
+                <Card style={styles.emptyCard}>
+                  <Card.Content>
+                    <Text variant="bodyLarge" style={{ textAlign: 'center' }}>
+                      {activeTab === 'pendentes'
+                        ? showResultadosSessionHistory
+                          ? 'Nenhum histórico de exames encontrado'
+                          : 'Nenhum exame aguardando resultado'
+                        : 'Nenhum exame encontrado'}
+                    </Text>
+                    {activeTab === 'pendentes' && showResultadosSessionHistory ? (
+                      <Text
+                        variant="bodySmall"
+                        style={{
+                          textAlign: 'center',
+                          color: theme.colors.onSurfaceVariant,
+                          marginTop: 8,
+                        }}
+                      >
+                        Quando novas anamneses gerarem exames, elas aparecerão aqui separadas por
+                        sessão.
+                      </Text>
+                    ) : null}
+                  </Card.Content>
+                </Card>
+              ) : (
+                (showResultadosSessionHistory
+                  ? resultadosSessionSummaries
+                  : activeTab === 'pendentes'
+                    ? resultadosTabExames
+                    : filteredExames
+                ).map(item => {
+                  if (showResultadosSessionHistory) {
+                    const session = item as ResultadoSessionSummary;
+                    const isCurrentSession = session.threadId === currentThreadId;
+                    const examesLabel = `${session.totalExames} exame${session.totalExames > 1 ? 's' : ''}`;
 
-                  return (
-                    <Card
-                      key={`resultado-exame-${exame.id}`}
-                      style={[
-                        styles.card,
-                        styles.resultadoExamCard,
-                        resultadoEnviado && styles.resultadoExamCardCompleted,
-                      ]}
-                    >
-                      <TouchableOpacity onPress={() => openResultUpload(exame)} activeOpacity={0.75}>
+                    return (
+                      <Card
+                        key={`resultado-sessao-${session.threadId}`}
+                        style={[
+                          styles.card,
+                          styles.resultadoSessionCard,
+                          isCurrentSession ? styles.resultadoSessionCardCurrent : null,
+                        ]}
+                      >
                         <Card.Content>
-                          <View style={styles.resultadoExamHeader}>
-                            <MaterialIcons
-                              name={resultadoEnviado ? 'check-circle' : 'radio-button-unchecked'}
-                              size={scale(24)}
-                              color={resultadoEnviado ? '#2E7D32' : theme.colors.onSurfaceVariant}
-                            />
-                            <View style={styles.resultadoExamInfo}>
-                              <Text variant="titleMedium" style={{ fontWeight: 'bold' }}>
-                                {exame.titulo || 'Exame'}
-                              </Text>
-                              {exame.descricao ? (
-                                <Text
-                                  variant="bodySmall"
-                                  numberOfLines={2}
-                                  style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}
-                                >
-                                  {exame.descricao}
-                                </Text>
-                              ) : null}
-                            </View>
-                          </View>
-
-                          <View style={styles.resultadoExamMeta}>
-                            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                              {resultado
-                                ? `Último envio em ${formatDate(resultado.created_at)}`
-                                : 'Aguardando o upload do resultado deste exame.'}
+                          <View style={styles.resultadoSessionHeader}>
+                            <Text variant="titleMedium" style={{ fontWeight: 'bold', flex: 1 }}>
+                              Anamnese - {formatDate(session.sessionAt)}
                             </Text>
                             <Chip
                               compact
-                              icon={resultadoEnviado ? 'check-circle' : 'clock-outline'}
+                              mode={isCurrentSession ? 'flat' : 'outlined'}
                               style={[
-                                styles.resultadoStatusChip,
-                                {
-                                  backgroundColor: resultadoEnviado
-                                    ? theme.colors.primaryContainer
-                                    : theme.colors.secondaryContainer,
-                                },
+                                styles.resultadoSessionChip,
+                                isCurrentSession
+                                  ? { backgroundColor: theme.colors.primaryContainer }
+                                  : null,
                               ]}
                               textStyle={{
-                                color: resultadoEnviado
+                                color: isCurrentSession
                                   ? theme.colors.onPrimaryContainer
-                                  : theme.colors.onSecondaryContainer,
+                                  : theme.colors.onSurfaceVariant,
                               }}
                             >
-                              {resultadoEnviado ? 'Enviado' : 'Pendente'}
+                              {isCurrentSession ? 'Sessão atual' : 'Arquivada'}
                             </Chip>
                           </View>
 
-                          <View style={styles.resultadoExamActions}>
-                            {downloadUrl ? (
-                              <Button
-                                mode="outlined"
-                                icon="download"
-                                onPress={() => handleDownloadFile(downloadUrl, exame.titulo || 'Exame', resultado?.id || exame.id)}
-                                disabled={downloadingPdfId === (resultado?.id || exame.id)}
-                                loading={downloadingPdfId === (resultado?.id || exame.id)}
-                                style={styles.resultadoExamButton}
-                              >
-                                Baixar envio
-                              </Button>
-                            ) : null}
-                            <Button
-                              mode={resultadoEnviado ? 'text' : 'contained'}
-                              icon={resultadoEnviado ? 'refresh' : 'upload'}
-                              onPress={() => openResultUpload(exame)}
-                              style={styles.resultadoExamButton}
+                          <Text
+                            variant="bodySmall"
+                            style={{ color: theme.colors.onSurfaceVariant }}
+                          >
+                            {formatTime(session.sessionAt)} · {examesLabel}
+                          </Text>
+
+                          <View style={styles.resultadoSessionProgressHeader}>
+                            <Text
+                              variant="bodyMedium"
+                              style={{ color: theme.colors.onSurfaceVariant }}
                             >
-                              {resultadoEnviado ? 'Substituir envio' : 'Enviar resultado'}
+                              {session.completedExames} de {session.totalExames} exames com
+                              resultado enviado.
+                            </Text>
+                            <Chip
+                              compact
+                              style={{ backgroundColor: theme.colors.primaryContainer }}
+                              textStyle={{ color: theme.colors.onPrimaryContainer }}
+                            >
+                              {session.percentage}% completo
+                            </Chip>
+                          </View>
+
+                          <ProgressBar
+                            progress={session.progress}
+                            color={theme.colors.primary}
+                            style={styles.resultadoSessionProgressBar}
+                          />
+
+                          <View style={styles.resultadoSessionActions}>
+                            <Button
+                              mode={isCurrentSession ? 'contained' : 'outlined'}
+                              onPress={() => handleOpenResultadosSession(session.threadId)}
+                            >
+                              {isCurrentSession ? 'Abrir sessão atual' : 'Ver resultados'}
                             </Button>
                           </View>
                         </Card.Content>
-                      </TouchableOpacity>
-                    </Card>
-                  );
-                }
+                      </Card>
+                    );
+                  }
 
-                const exame = item as Exame;
-                if (activeTab === 'analisados') {
-                  const downloadUrl = getDownloadUrl(exame);
+                  if (activeTab === 'pendentes') {
+                    const exame = item as Exame;
+                    const resultado = latestResultadoByTaskId.get(exame.id);
+                    const resultadoEnviado = isResultadoEnviado(exame);
+                    const downloadUrl = resultado ? getDownloadableUrl(resultado.file_url) : '';
+
+                    return (
+                      <Card
+                        key={`resultado-exame-${exame.id}`}
+                        style={[
+                          styles.card,
+                          styles.resultadoExamCard,
+                          resultadoEnviado && styles.resultadoExamCardCompleted,
+                        ]}
+                      >
+                        <TouchableOpacity
+                          onPress={() => openResultUpload(exame)}
+                          activeOpacity={0.75}
+                          disabled={uploadingResultExamId === exame.id}
+                        >
+                          <Card.Content>
+                            <View style={styles.resultadoExamHeader}>
+                              <MaterialIcons
+                                name={resultadoEnviado ? 'check-circle' : 'radio-button-unchecked'}
+                                size={scale(24)}
+                                color={resultadoEnviado ? '#2E7D32' : theme.colors.onSurfaceVariant}
+                              />
+                              <View style={styles.resultadoExamInfo}>
+                                <Text variant="titleMedium" style={{ fontWeight: 'bold' }}>
+                                  {exame.titulo || 'Exame'}
+                                </Text>
+                                {exame.descricao ? (
+                                  <Text
+                                    variant="bodySmall"
+                                    numberOfLines={2}
+                                    style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}
+                                  >
+                                    {exame.descricao}
+                                  </Text>
+                                ) : null}
+                              </View>
+                            </View>
+
+                            <View style={styles.resultadoExamMeta}>
+                              <Text
+                                variant="bodySmall"
+                                style={{ color: theme.colors.onSurfaceVariant }}
+                              >
+                                {resultado
+                                  ? `Último envio em ${formatDate(resultado.created_at)}`
+                                  : 'Aguardando o upload do resultado deste exame.'}
+                              </Text>
+                              <Chip
+                                compact
+                                icon={resultadoEnviado ? 'check-circle' : 'clock-outline'}
+                                style={[
+                                  styles.resultadoStatusChip,
+                                  {
+                                    backgroundColor: resultadoEnviado
+                                      ? theme.colors.primaryContainer
+                                      : theme.colors.secondaryContainer,
+                                  },
+                                ]}
+                                textStyle={{
+                                  color: resultadoEnviado
+                                    ? theme.colors.onPrimaryContainer
+                                    : theme.colors.onSecondaryContainer,
+                                }}
+                              >
+                                {resultadoEnviado ? 'Enviado' : 'Pendente'}
+                              </Chip>
+                            </View>
+
+                            <View style={styles.resultadoExamActions}>
+                              {downloadUrl ? (
+                                <Button
+                                  mode="outlined"
+                                  icon="download"
+                                  onPress={() =>
+                                    handleDownloadFile(
+                                      downloadUrl,
+                                      exame.titulo || 'Exame',
+                                      resultado?.id || exame.id
+                                    )
+                                  }
+                                  disabled={downloadingPdfId === (resultado?.id || exame.id)}
+                                  loading={downloadingPdfId === (resultado?.id || exame.id)}
+                                  style={styles.resultadoExamButton}
+                                >
+                                  Baixar envio
+                                </Button>
+                              ) : null}
+                              <Button
+                                mode={resultadoEnviado ? 'text' : 'contained'}
+                                icon={resultadoEnviado ? 'refresh' : 'upload'}
+                                onPress={() => openResultUpload(exame)}
+                                style={styles.resultadoExamButton}
+                                disabled={uploadingResultExamId === exame.id}
+                                loading={uploadingResultExamId === exame.id}
+                              >
+                                {uploadingResultExamId === exame.id
+                                  ? 'Enviando...'
+                                  : resultadoEnviado
+                                    ? 'Substituir envio'
+                                    : 'Enviar resultado'}
+                              </Button>
+                            </View>
+                          </Card.Content>
+                        </TouchableOpacity>
+                      </Card>
+                    );
+                  }
+
+                  const exame = item as Exame;
+                  if (activeTab === 'analisados') {
+                    const downloadUrl = getDownloadUrl(exame);
+                    return (
+                      <Card key={exame.id} style={styles.card}>
+                        <TouchableOpacity
+                          onPress={() => openInterpretation(exame)}
+                          activeOpacity={0.7}
+                        >
+                          <Card.Content>
+                            <View style={styles.cardHeader}>
+                              <Text variant="titleMedium" style={{ fontWeight: 'bold' }}>
+                                {exame.titulo || 'Exame'}
+                              </Text>
+                              <Text
+                                variant="bodySmall"
+                                style={{ color: theme.colors.onSurfaceVariant }}
+                              >
+                                {formatDate(exame.created_at)}
+                              </Text>
+                            </View>
+
+                            <Button
+                              mode="outlined"
+                              icon="download"
+                              onPress={() =>
+                                downloadUrl &&
+                                handleDownloadFile(downloadUrl, exame.titulo || 'Exame', exame.id)
+                              }
+                              disabled={!downloadUrl || downloadingPdfId === exame.id}
+                              loading={downloadingPdfId === exame.id}
+                              style={styles.resultadoButton}
+                            >
+                              Baixar
+                            </Button>
+                          </Card.Content>
+                        </TouchableOpacity>
+                      </Card>
+                    );
+                  }
+
+                  // Para outras abas, manter o layout completo
                   return (
                     <Card key={exame.id} style={styles.card}>
-                      <TouchableOpacity onPress={() => openInterpretation(exame)} activeOpacity={0.7}>
-                        <Card.Content>
+                      <Card.Content>
+                        {activeTab === 'todos' ? (
+                          <View style={[styles.cardHeader, styles.cardHeaderWithStatus]}>
+                            <View style={styles.cardHeaderLeft}>
+                              <Text variant="titleMedium" style={{ fontWeight: 'bold' }}>
+                                {exame.titulo || 'Exame'}
+                              </Text>
+                            </View>
+                            <View style={styles.cardHeaderRight}>
+                              <Text
+                                variant="bodySmall"
+                                style={{ color: theme.colors.onSurfaceVariant }}
+                              >
+                                {formatDate(exame.created_at)}
+                              </Text>
+                              {renderGuiaStatus(exame)}
+                            </View>
+                          </View>
+                        ) : (
                           <View style={styles.cardHeader}>
                             <Text variant="titleMedium" style={{ fontWeight: 'bold' }}>
                               {exame.titulo || 'Exame'}
                             </Text>
-                            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                            <Text
+                              variant="bodySmall"
+                              style={{ color: theme.colors.onSurfaceVariant }}
+                            >
                               {formatDate(exame.created_at)}
                             </Text>
                           </View>
+                        )}
 
+                        {exame.is_general_guide && (
+                          <Chip
+                            style={[styles.generalGuideChip, styles.generalGuideChipCard]}
+                            textStyle={styles.generalGuideChipText}
+                            icon="file-document"
+                            compact
+                          >
+                            Guia geral
+                          </Chip>
+                        )}
+
+                        {exame.urgencia && (
+                          <Chip style={styles.categoryChip} compact>
+                            {exame.urgencia === 'urgente'
+                              ? 'PRIORIDADE Urgente'
+                              : exame.urgencia === 'alta'
+                                ? 'PRIORIDADE Alta'
+                                : exame.urgencia === 'média'
+                                  ? 'PRIORIDADE Média'
+                                  : `PRIORIDADE ${exame.urgencia}`}
+                          </Chip>
+                        )}
+
+                        {exame.descricao && (
+                          <Text variant="bodyMedium" style={styles.description}>
+                            {exame.descricao}
+                          </Text>
+                        )}
+
+                        {exame.interpretacao && activeTab !== 'pendentes' && (
+                          <Text
+                            variant="bodySmall"
+                            style={{ marginTop: 8, color: theme.colors.onSurfaceVariant }}
+                          >
+                            {exame.interpretacao.substring(0, 150)}...
+                          </Text>
+                        )}
+
+                        {/* Mostrar status se foi analisado */}
+                        {exame.foi_analisado && (
+                          <Chip
+                            icon="check-circle"
+                            style={[
+                              styles.statusChip,
+                              { backgroundColor: theme.colors.primaryContainer },
+                            ]}
+                            textStyle={{ color: theme.colors.onPrimaryContainer }}
+                          >
+                            Concluído
+                          </Chip>
+                        )}
+
+                        {exame.urlpdf && !exame.foi_analisado ? (
+                          <View style={styles.pdfButtonsContainer}>
+                            <Button
+                              mode="outlined"
+                              icon="eye"
+                              onPress={() => openPDFPreview(exame.urlpdf!, exame.titulo || 'Exame')}
+                              style={styles.pdfButton}
+                            >
+                              Visualizar Guia
+                            </Button>
+                            <Button
+                              mode="contained"
+                              icon="download"
+                              onPress={() =>
+                                handleDownloadFile(exame.urlpdf!, exame.titulo || 'Exame', exame.id)
+                              }
+                              loading={downloadingPdfId === exame.id}
+                              disabled={downloadingPdfId === exame.id}
+                              style={styles.pdfButton}
+                            >
+                              {downloadingPdfId === exame.id ? 'Baixando...' : 'Baixar Guia'}
+                            </Button>
+                          </View>
+                        ) : !exame.foi_analisado ? (
                           <Button
                             mode="outlined"
-                            icon="download"
-                            onPress={() => downloadUrl && handleDownloadFile(downloadUrl, exame.titulo || 'Exame', exame.id)}
-                            disabled={!downloadUrl || downloadingPdfId === exame.id}
-                            loading={downloadingPdfId === exame.id}
-                            style={styles.resultadoButton}
+                            icon="file-pdf-box"
+                            onPress={() => handleGeneratePDF(exame)}
+                            loading={generatingPdfId === exame.id}
+                            disabled={generatingPdfId === exame.id}
+                            style={styles.pdfButton}
                           >
-                            Baixar
+                            {generatingPdfId === exame.id ? 'Gerando PDF...' : 'Gerar Guia em PDF'}
                           </Button>
-                        </Card.Content>
-                      </TouchableOpacity>
+                        ) : (
+                          <Text
+                            variant="bodySmall"
+                            style={{
+                              marginTop: 8,
+                              color: theme.colors.primary,
+                              fontStyle: 'italic',
+                            }}
+                          >
+                            Exame executado - Guia não disponível para download
+                          </Text>
+                        )}
+
+                        {exame.interpretacao && (
+                          <Button
+                            mode="text"
+                            onPress={() =>
+                              router.push({
+                                pathname: '/exames/interpretacao',
+                                params: { exameId: exame.id.toString() },
+                              })
+                            }
+                            style={styles.interpretButton}
+                          >
+                            Ver Interpretação
+                          </Button>
+                        )}
+                      </Card.Content>
                     </Card>
                   );
-                }
-
-                // Para outras abas, manter o layout completo
-                return (
-                  <Card key={exame.id} style={styles.card}>
-                    <Card.Content>
-                      {activeTab === 'todos' ? (
-                        <View style={[styles.cardHeader, styles.cardHeaderWithStatus]}>
-                          <View style={styles.cardHeaderLeft}>
-                            <Text variant="titleMedium" style={{ fontWeight: 'bold' }}>
-                              {exame.titulo || 'Exame'}
-                            </Text>
-                          </View>
-                          <View style={styles.cardHeaderRight}>
-                            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                              {formatDate(exame.created_at)}
-                            </Text>
-                            {renderGuiaStatus(exame)}
-                          </View>
-                        </View>
-                      ) : (
-                        <View style={styles.cardHeader}>
-                          <Text variant="titleMedium" style={{ fontWeight: 'bold' }}>
-                            {exame.titulo || 'Exame'}
-                          </Text>
-                          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                            {formatDate(exame.created_at)}
-                          </Text>
-                        </View>
-                      )}
-
-                      {exame.is_general_guide && (
-                        <Chip
-                          style={[styles.generalGuideChip, styles.generalGuideChipCard]}
-                          textStyle={styles.generalGuideChipText}
-                          icon="file-document"
-                          compact
-                        >
-                          Guia geral
-                        </Chip>
-                      )}
-
-                      {exame.urgencia && (
-                        <Chip style={styles.categoryChip} compact>
-                          {exame.urgencia === 'urgente'
-                            ? 'PRIORIDADE Urgente'
-                            : exame.urgencia === 'alta'
-                              ? 'PRIORIDADE Alta'
-                              : exame.urgencia === 'média'
-                                ? 'PRIORIDADE Média'
-                                : `PRIORIDADE ${exame.urgencia}`}
-                        </Chip>
-                      )}
-
-                      {exame.descricao && (
-                        <Text variant="bodyMedium" style={styles.description}>
-                          {exame.descricao}
-                        </Text>
-                      )}
-
-                      {exame.interpretacao && activeTab !== 'pendentes' && (
-                        <Text variant="bodySmall" style={{ marginTop: 8, color: theme.colors.onSurfaceVariant }}>
-                          {exame.interpretacao.substring(0, 150)}...
-                        </Text>
-                      )}
-
-                      {/* Mostrar status se foi analisado */}
-                      {exame.foi_analisado && (
-                        <Chip 
-                          icon="check-circle" 
-                          style={[styles.statusChip, { backgroundColor: theme.colors.primaryContainer }]}
-                          textStyle={{ color: theme.colors.onPrimaryContainer }}
-                        >
-                          Concluído
-                        </Chip>
-                      )}
-
-                      {exame.urlpdf && !exame.foi_analisado ? (
-                        <View style={styles.pdfButtonsContainer}>
-                          <Button
-                            mode="outlined"
-                            icon="eye"
-                            onPress={() => openPDFPreview(exame.urlpdf!, exame.titulo || 'Exame')}
-                            style={styles.pdfButton}
-                          >
-                            Visualizar Guia
-                          </Button>
-                          <Button
-                            mode="contained"
-                            icon="download"
-                            onPress={() => handleDownloadFile(exame.urlpdf!, exame.titulo || 'Exame', exame.id)}
-                            loading={downloadingPdfId === exame.id}
-                            disabled={downloadingPdfId === exame.id}
-                            style={styles.pdfButton}
-                          >
-                            {downloadingPdfId === exame.id ? 'Baixando...' : 'Baixar Guia'}
-                          </Button>
-                        </View>
-                      ) : !exame.foi_analisado ? (
-                        <Button
-                          mode="outlined"
-                          icon="file-pdf-box"
-                          onPress={() => handleGeneratePDF(exame)}
-                          loading={generatingPdfId === exame.id}
-                          disabled={generatingPdfId === exame.id}
-                          style={styles.pdfButton}
-                        >
-                          {generatingPdfId === exame.id ? 'Gerando PDF...' : 'Gerar Guia em PDF'}
-                        </Button>
-                      ) : (
-                        <Text variant="bodySmall" style={{ marginTop: 8, color: theme.colors.primary, fontStyle: 'italic' }}>
-                          Exame executado - Guia não disponível para download
-                        </Text>
-                      )}
-
-                      {exame.interpretacao && (
-                        <Button
-                          mode="text"
-                          onPress={() =>
-                            router.push({
-                              pathname: '/exames/interpretacao',
-                              params: { exameId: exame.id.toString() },
-                            })
-                          }
-                          style={styles.interpretButton}
-                        >
-                          Ver Interpretação
-                        </Button>
-                      )}
-                    </Card.Content>
-                  </Card>
-                );
-              })
-            )}
-
+                })
+              )}
             </ScrollView>
             {showFloatingResultadosProgress && (
               <View pointerEvents="box-none" style={styles.floatingResultadosProgressWrap}>
@@ -1659,7 +2194,8 @@ export default function ExamesScreen() {
                       style={styles.resultadosProgressBar}
                     />
                     <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                      {resultadosProgress.completed} de {resultadosProgress.total} exames com resultado enviado.
+                      {resultadosProgress.completed} de {resultadosProgress.total} exames com
+                      resultado enviado.
                     </Text>
                   </Card.Content>
                 </Card>
@@ -1751,6 +2287,27 @@ const styles = StyleSheet.create({
     marginHorizontal: 8,
     marginBottom: 8,
     borderRadius: 12,
+  },
+  threadFilterCard: {
+    marginHorizontal: 8,
+    marginBottom: 8,
+    borderRadius: 12,
+  },
+  threadFilterContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    flexWrap: 'wrap',
+  },
+  threadFilterInfo: {
+    flex: 1,
+    minWidth: 220,
+  },
+  threadFilterTitle: {
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: 4,
   },
   generalUploadTop: {
     flexDirection: 'row',
@@ -1894,6 +2451,41 @@ const styles = StyleSheet.create({
   },
   resultadoButton: {
     marginTop: 12,
+  },
+  resultadoSessionCard: {
+    borderWidth: 1,
+    borderColor: 'rgba(0, 0, 0, 0.08)',
+  },
+  resultadoSessionCardCurrent: {
+    borderColor: '#2F80ED',
+  },
+  resultadoSessionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 8,
+    flexWrap: 'wrap',
+  },
+  resultadoSessionChip: {
+    borderRadius: 999,
+  },
+  resultadoSessionProgressHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+  },
+  resultadoSessionProgressBar: {
+    height: 10,
+    borderRadius: 999,
+    marginTop: 10,
+  },
+  resultadoSessionActions: {
+    marginTop: 12,
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
   },
   resultadoExamCard: {
     borderWidth: 1,

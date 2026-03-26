@@ -6,6 +6,7 @@ import { supabase } from '@/services/supabase/client';
 import { exameAnalysisService } from '@/services/exame-analysis';
 import { useFontScale } from '@/hooks/useFontScale';
 import { useAppStore } from '@/store/appStore';
+import { pickNativeExamUploadAsset, uploadNativeExamAsset } from '@/services/native-exam-upload';
 
 interface ExameSugerido {
   id: number;
@@ -236,10 +237,6 @@ export default function InterpretacaoScreen() {
   };
 
   const handleUploadAnamneseGeral = async (mode: 'pdf' | 'image') => {
-    if (!isWeb) {
-      Alert.alert('Envio disponível apenas na versão web', 'Abra a versão web para enviar exames.');
-      return;
-    }
     if (!threadId) {
       Alert.alert('Sessão não encontrada', 'Inicie ou selecione uma anamnese para enviar resultados.');
       return;
@@ -255,18 +252,49 @@ export default function InterpretacaoScreen() {
         throw new Error('Usuário não autenticado');
       }
 
-      const accept = mode === 'pdf' ? 'application/pdf' : 'image/*';
-      const file = await pickFileWeb(accept);
-      if (!file) {
-        setAnamneseStatus('Envio cancelado.');
-        return;
+      let uploadResult:
+        | {
+            fileUrl: string;
+            mimeType: string;
+            fileName: string;
+            fileType: 'image' | 'pdf';
+            storageBucket: string | null;
+            storagePath: string | null;
+          }
+        | undefined;
+
+      if (isWeb) {
+        const accept = mode === 'pdf' ? 'application/pdf' : 'image/*';
+        const file = await pickFileWeb(accept);
+        if (!file) {
+          setAnamneseStatus('Envio cancelado.');
+          return;
+        }
+
+        setAnamneseStatus('Enviando arquivo...');
+        const { fileUrl, mimeType } = await uploadViaEdgeFunction(file);
+        uploadResult = {
+          fileUrl,
+          mimeType,
+          fileName: file.name,
+          fileType: mimeType === 'application/pdf' ? 'pdf' : 'image',
+          storageBucket: null,
+          storagePath: null,
+        };
+      } else {
+        const pickedAsset = await pickNativeExamUploadAsset(mode === 'pdf' ? 'pdf' : 'image');
+        if (!pickedAsset) {
+          setAnamneseStatus('Envio cancelado.');
+          return;
+        }
+
+        setAnamneseStatus('Enviando arquivo...');
+        uploadResult = await uploadNativeExamAsset(pickedAsset);
       }
 
-      setAnamneseStatus('Enviando arquivo...');
-      const { fileUrl, mimeType } = await uploadViaEdgeFunction(file);
+      const { fileUrl, mimeType, fileName, fileType, storageBucket, storagePath } = uploadResult;
 
       setAnamneseStatus('Processando interpretação...');
-      const fileType = mimeType === 'application/pdf' ? 'pdf' : 'image';
       const titulo = `Resultados da anamnese (${anamneseDateLabel})`;
 
       const uploadRecordPromise = supabase
@@ -276,10 +304,12 @@ export default function InterpretacaoScreen() {
           id_threadconversa: threadId,
           titulo,
           file_url: fileUrl,
-          file_name: file.name,
+          file_name: fileName,
           mime_type: mimeType,
           file_type: fileType,
           source: 'anamnese_geral',
+          storage_bucket: storageBucket,
+          storage_path: storagePath,
         });
 
       const analysisPromise = exameAnalysisService.analyzeExame({ fileUrl, fileType });
@@ -311,11 +341,6 @@ export default function InterpretacaoScreen() {
   };
 
   const handleSend = async () => {
-    if (!isWeb) {
-      Alert.alert('Envio disponível apenas na versão web', 'Abra a versão web para enviar exames.');
-      return;
-    }
-
     const requireSelection = examesSugeridos.length > 0;
     if (requireSelection && !exameSelecionado) {
       // Garantir associação ao exame selecionado para interpretação automática
@@ -334,19 +359,50 @@ export default function InterpretacaoScreen() {
         throw new Error('Usuário não autenticado');
       }
 
-      const accept = mode === 'pdf' ? 'application/pdf' : 'image/*';
-      const file = await pickFileWeb(accept);
-      if (!file) {
-        setStatus('Aguardando envio.');
-        return;
+      let uploadResult:
+        | {
+            fileUrl: string;
+            mimeType: string;
+            fileName: string;
+            fileType: 'image' | 'pdf';
+            storageBucket: string | null;
+            storagePath: string | null;
+          }
+        | undefined;
+
+      if (isWeb) {
+        const accept = mode === 'pdf' ? 'application/pdf' : 'image/*';
+        const file = await pickFileWeb(accept);
+        if (!file) {
+          setStatus('Aguardando envio.');
+          return;
+        }
+
+        setStatus('Enviando arquivo...');
+        const { fileUrl, mimeType, storageBucket, storagePath } = await uploadViaEdgeFunction(file);
+        uploadResult = {
+          fileUrl,
+          mimeType,
+          fileName: file.name,
+          fileType: mimeType === 'application/pdf' ? 'pdf' : 'image',
+          storageBucket,
+          storagePath,
+        };
+      } else {
+        const pickedAsset = await pickNativeExamUploadAsset(mode === 'pdf' ? 'pdf' : 'image');
+        if (!pickedAsset) {
+          setStatus('Aguardando envio.');
+          return;
+        }
+
+        setStatus('Enviando arquivo...');
+        uploadResult = await uploadNativeExamAsset(pickedAsset);
       }
 
-      setStatus('Enviando arquivo...');
-      const { fileUrl, mimeType, storageBucket, storagePath } = await uploadViaEdgeFunction(file);
+      const { fileUrl, mimeType, fileName, fileType, storageBucket, storagePath } = uploadResult;
       setLastFileUrl(fileUrl);
 
       setStatus('Processando interpretação...');
-      const fileType = mimeType === 'application/pdf' ? 'pdf' : 'image';
 
       const exameSelecionadoData = examesSugeridos.find((exame) => exame.id === exameSelecionado);
       const tituloResultado = exameSelecionadoData?.titulo || null;
@@ -358,7 +414,7 @@ export default function InterpretacaoScreen() {
           task_exame_id: exameSelecionado || null,
           titulo: tituloResultado,
           file_url: fileUrl,
-          file_name: file.name,
+          file_name: fileName,
           mime_type: mimeType,
           file_type: fileType,
           source: 'interpretacao',
@@ -533,11 +589,6 @@ export default function InterpretacaoScreen() {
                         >
                           {loading ? 'Enviando...' : mode === 'pdf' ? 'Enviar PDF' : 'Enviar Imagem'}
                         </Button>
-                        {!isWeb && (
-                          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8 }}>
-                            Envio disponível apenas na versão web.
-                          </Text>
-                        )}
                         {loading && (
                           <View style={styles.statusRow}>
                             <ActivityIndicator size="small" />
@@ -570,11 +621,6 @@ export default function InterpretacaoScreen() {
                   >
                     {mode === 'pdf' ? 'Enviar PDF' : 'Enviar Imagem'}
                   </Button>
-                  {!isWeb && (
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8 }}>
-                      Envio disponível apenas na versão web.
-                    </Text>
-                  )}
 
                   {loading ? (
                     <View style={styles.statusRow}>
@@ -699,11 +745,6 @@ export default function InterpretacaoScreen() {
                   Enviar Imagem
                 </Button>
               </View>
-              {!isWeb && (
-                <Text style={[styles.statusText, { color: theme.colors.onSurfaceVariant }]}>
-                  Envio disponível apenas na versão web.
-                </Text>
-              )}
             </View>
           </View>
         )}

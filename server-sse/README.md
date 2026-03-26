@@ -43,6 +43,6 @@ npm run start:prod
 ## Docker
 
 ```bash
-docker build -t lidfe-sse-server .
-docker run -p 3001:3001 -e REDIS_URL=redis://host.docker.internal:6379 lidfe-sse-server
+docker build -t infinitytools/sse-server:latest .
+docker run -p 3001:3001 -e REDIS_URL=redis://host.docker.internal:6379 infinitytools/sse-server:latest
 ```
